@@ -134,4 +134,10 @@ Closes #12
 
 **Organization:** ResearchMind AI
 **Repository:** researchmind-ai
-**URL:** (will be added after GitHub setup)
+**URL:** https://github.com/ResearchMind-AI/researchmind-ai
+
+### Repository Links
+- **Code:** https://github.com/ResearchMind-AI/researchmind-ai
+- **Issues:** https://github.com/ResearchMind-AI/researchmind-ai/issues
+- **Pull Requests:** https://github.com/ResearchMind-AI/researchmind-ai/pulls
+- **Projects:** https://github.com/ResearchMind-AI/researchmind-ai/projects
