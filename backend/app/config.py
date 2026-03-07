@@ -3,10 +3,9 @@ Configuration management for ResearchMindAI
 Uses pydantic-settings for environment variable validation
 """
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
-from typing import List
+from pydantic import Field, model_validator
+from typing import List, Union
 import os
-
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
@@ -37,16 +36,17 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # CORS
-    CORS_ORIGINS: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:5173"],
-        description="Allowed CORS origins"
+    CORS_ORIGINS: Union[str, List[str]] = Field(
+        default="http://localhost:3000,http://localhost:5173",
+        description="Allowed CORS origins (comma-separated string or list)"
     )
 
-    @validator("CORS_ORIGINS", pre=True)
-    def parse_cors_origins(cls, v):
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
-        return v
+    @model_validator(mode="after")
+    def parse_cors_origins(self):
+        """Convert CORS_ORIGINS from comma-separated string to list"""
+        if isinstance(self.CORS_ORIGINS, str):
+            self.CORS_ORIGINS = [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+        return self
 
     # OpenAI
     OPENAI_API_KEY: str = Field(

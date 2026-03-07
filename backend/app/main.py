@@ -5,6 +5,7 @@ Main entry point for the backend API
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.config import settings, ensure_directories
 from app.core.database import get_db, engine, Base
@@ -71,7 +72,7 @@ async def health_check(db: Session = Depends(get_db)):
     """
     try:
         # Test database connection
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         db_status = "healthy"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
