@@ -316,6 +316,3 @@ docker-compose -f docker-compose.dev.yml down
 3. deactivate (exit venv)
 ```
 
----
-
-**Ready to start coding! 🚀**

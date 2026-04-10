@@ -196,6 +196,3 @@ flake8 app/
 
 MIT
 
-## Contributing
-
-Contributions welcome! Please read CONTRIBUTING.md first.
