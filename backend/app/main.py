@@ -99,14 +99,14 @@ async def root():
 
 
 # API v1 routers
-from app.api.v1 import auth, teams, sessions
+from app.api.v1 import auth, teams, sessions, papers
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
 app.include_router(sessions.router, prefix="/api/v1/sessions", tags=["Sessions"])
+app.include_router(papers.router, prefix="/api/v1/papers", tags=["Papers"])
 
 # Additional routers will be added as we build them:
-# - papers (paper ingestion)
 # - knowledge_map (AI synthesis)
 # - chat (RAG chat)
 # - gap_analysis (research gaps)

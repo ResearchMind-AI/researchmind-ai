@@ -32,6 +32,20 @@ from app.schemas.session import (
     SessionMemberUpdate,
     SessionMemberResponse,
 )
+from app.schemas.paper import (
+    PaperBase,
+    PaperCreate,
+    PaperUpdate,
+    PaperResponse,
+    PaperSearchResult,
+    PaperSearchRequest,
+    PaperSearchResponse,
+    PaperIngestRequest,
+    SessionPaperCreate,
+    SessionPaperUpdate,
+    SessionPaperResponse,
+    PaperUploadResponse,
+)
 
 __all__ = [
     # User schemas
@@ -62,4 +76,17 @@ __all__ = [
     "SessionMemberCreate",
     "SessionMemberUpdate",
     "SessionMemberResponse",
+    # Paper schemas
+    "PaperBase",
+    "PaperCreate",
+    "PaperUpdate",
+    "PaperResponse",
+    "PaperSearchResult",
+    "PaperSearchRequest",
+    "PaperSearchResponse",
+    "PaperIngestRequest",
+    "SessionPaperCreate",
+    "SessionPaperUpdate",
+    "SessionPaperResponse",
+    "PaperUploadResponse",
 ]
