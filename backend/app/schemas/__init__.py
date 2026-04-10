@@ -22,6 +22,16 @@ from app.schemas.team import (
     TeamMemberResponse,
     TeamInvite,
 )
+from app.schemas.session import (
+    SessionBase,
+    SessionCreate,
+    SessionUpdate,
+    SessionResponse,
+    SessionWithMembersResponse,
+    SessionMemberCreate,
+    SessionMemberUpdate,
+    SessionMemberResponse,
+)
 
 __all__ = [
     # User schemas
@@ -43,4 +53,13 @@ __all__ = [
     "TeamMemberUpdate",
     "TeamMemberResponse",
     "TeamInvite",
+    # Session schemas
+    "SessionBase",
+    "SessionCreate",
+    "SessionUpdate",
+    "SessionResponse",
+    "SessionWithMembersResponse",
+    "SessionMemberCreate",
+    "SessionMemberUpdate",
+    "SessionMemberResponse",
 ]
