@@ -97,11 +97,20 @@ async def root():
     }
 
 
-# API v1 router (will be added later)
-# from app.api.v1 import auth, sessions, papers, knowledge_map, chat, gap_analysis, sharing, export
-# app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
-# app.include_router(sessions.router, prefix="/api/v1/sessions", tags=["Sessions"])
-# ... more routers will be added as we build them
+# API v1 routers
+from app.api.v1 import auth, teams
+
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
+app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
+
+# Additional routers will be added as we build them:
+# - sessions (session management)
+# - papers (paper ingestion)
+# - knowledge_map (AI synthesis)
+# - chat (RAG chat)
+# - gap_analysis (research gaps)
+# - sharing (collaboration)
+# - export (PDF export)
 
 
 if __name__ == "__main__":

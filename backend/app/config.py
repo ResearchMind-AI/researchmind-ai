@@ -3,8 +3,8 @@ Configuration management for ResearchMindAI
 Uses pydantic-settings for environment variable validation
 """
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
-from typing import List
+from pydantic import Field, field_validator
+from typing import List, Union
 import os
 
 
@@ -37,12 +37,13 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # CORS
-    CORS_ORIGINS: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:5173"],
+    CORS_ORIGINS: Union[str, List[str]] = Field(
+        default="http://localhost:3000,http://localhost:5173",
         description="Allowed CORS origins"
     )
 
-    @validator("CORS_ORIGINS", pre=True)
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]

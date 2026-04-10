@@ -45,6 +45,6 @@ def get_db() -> Generator[Session, None, None]:
 def init_db():
     """Initialize database - create all tables"""
     # Import all models here to ensure they're registered
-    from app.models import user, team, session, paper, knowledge_map, chat_message, gap_analysis, session_share
+    from app.models import User, Team, TeamMember, Session
 
     Base.metadata.create_all(bind=engine)
