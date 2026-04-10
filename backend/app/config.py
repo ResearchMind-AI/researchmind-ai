@@ -53,6 +53,18 @@ class Settings(BaseSettings):
         default="",
         description="OpenAI API key for embeddings and chat"
     )
+    EMBEDDING_MODEL: str = Field(
+        default="text-embedding-3-small",
+        description="OpenAI embedding model to use"
+    )
+    CHUNK_SIZE: int = Field(
+        default=1000,
+        description="Text chunk size for embeddings"
+    )
+    CHUNK_OVERLAP: int = Field(
+        default=200,
+        description="Overlap between text chunks"
+    )
 
     # PubMed
     PUBMED_API_KEY: str = Field(
