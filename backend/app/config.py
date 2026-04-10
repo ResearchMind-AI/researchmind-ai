@@ -7,7 +7,6 @@ from pydantic import Field, field_validator
 from typing import List, Union
 import os
 
-
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
 
@@ -39,7 +38,7 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: Union[str, List[str]] = Field(
         default="http://localhost:3000,http://localhost:5173",
-        description="Allowed CORS origins"
+        description="Allowed CORS origins (comma-separated string or list)"
     )
 
     @field_validator("CORS_ORIGINS", mode="before")
