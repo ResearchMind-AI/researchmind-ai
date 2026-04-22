@@ -1,0 +1,66 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - certbot-webroot:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - researchmind
+
+  backend:
+    image: ${BACKEND_IMAGE:-researchmind-backend:latest}
+    env_file: .env
+    volumes:
+      - uploads:/app/uploads
+      - chroma:/app/chroma_data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - researchmind
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ── Frontend (uncomment when frontend/ is built) ─────────────────────────────
+  # frontend:
+  #   image: ${FRONTEND_IMAGE:-researchmind-frontend:latest}
+  #   restart: unless-stopped
+  #   networks:
+  #     - researchmind
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - researchmind
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  researchmind:
+    driver: bridge
+
+volumes:
+  uploads:       # Uploaded PDFs/documents
+  chroma:        # ChromaDB vector store persistence
+  redis-data:    # Redis persistence
+  certbot-webroot:
+  letsencrypt:
