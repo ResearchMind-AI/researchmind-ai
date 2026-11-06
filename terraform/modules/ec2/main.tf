@@ -111,6 +111,15 @@ resource "aws_instance" "app" {
     #!/bin/bash
     set -e
 
+    # 2 GB swap: t2.micro has 1 GB RAM for nginx + API + UI + Redis
+    if [ ! -f /swapfile ]; then
+      dd if=/dev/zero of=/swapfile bs=1M count=2048
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
     # Update system
     dnf update -y
 
