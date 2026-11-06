@@ -57,3 +57,31 @@ def test_invite_code_required_when_set(db, monkeypatch):
         assert client.post("/api/v1/auth/register", json=body).status_code == 403
         assert client.post("/api/v1/auth/register?invite_code=wrong", json=body).status_code == 403
         assert client.post("/api/v1/auth/register?invite_code=letmein", json=body).status_code == 201
+
+
+def test_api_gaps_and_writing(db, make_user, make_session):
+    from app.main import app
+    owner, viewer = make_user("o@x.com"), make_user("v@x.com")
+    s = make_session(owner)
+    access.share_session(db, s, owner, "v@x.com", "viewer")
+    with TestClient(app) as client:
+        ho, hv = _token(client, "o@x.com"), _token(client, "v@x.com")
+        base = f"/api/v1/research/sessions/{s.id}"
+        assert client.post(f"{base}/discover", json={"max_papers": 10}, headers=ho).status_code == 200
+        assert client.post(f"{base}/gaps", headers=ho).status_code == 200
+        gaps = client.get(f"{base}/gaps", headers=hv).json()
+        assert len(gaps) == 3
+        r = client.patch(f"{base}/gaps/{gaps[0]['id']}", json={"pinned": True, "status": "promising"}, headers=ho)
+        assert r.json()["pinned"] is True
+        assert client.patch(f"{base}/gaps/{gaps[0]['id']}", json={"pinned": False}, headers=hv).status_code == 403
+        g = client.post(f"{base}/gaps/custom", json={"title": "My new research gap"}, headers=ho).json()
+        assert g["source"] == "user" and g["assessment"]["novelty"]["verdict"]
+        r = client.post(f"{base}/chat", json={"question": "Is it real?", "gap_id": g["id"]}, headers=ho)
+        assert r.status_code == 200
+        secs = client.post(f"{base}/writing/outline", headers=ho).json()
+        sid = secs[0]["id"]
+        client.put(f"{base}/writing/sections/{sid}", headers=ho,
+                   json={"user_text": "LLMs are used in hospitals for triage and diagnosis support [1]. " * 4})
+        assert client.post(f"{base}/writing/sections/{sid}/check", headers=ho).json()["words"] > 20
+        r = client.get(f"{base}/writing/export?style=IEEE&format=pdf", headers=hv)
+        assert r.status_code == 200 and r.content[:4] == b"%PDF"

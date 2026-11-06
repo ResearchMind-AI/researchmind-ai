@@ -7,7 +7,7 @@ from app.models.team import Team, TeamMember, TeamRole
 from app.models.session import Session, SessionMember, SessionStatus, SessionMemberRole
 from app.models.paper import Paper, SessionPaper, PaperSource
 from app.models.knowledge_map import KnowledgeNode, NodeRelationship, NodeType, RelationType
-from app.models.research import PaperChunk, SessionMessage, SessionArtifact, ApiCache
+from app.models.research import PaperChunk, SessionMessage, SessionArtifact, ApiCache, Gap, WritingSection
 from app.core.database import Base
 
 __all__ = [
@@ -30,5 +30,7 @@ __all__ = [
     "SessionMessage",
     "SessionArtifact",
     "ApiCache",
+    "Gap",
+    "WritingSection",
     "Base",
 ]

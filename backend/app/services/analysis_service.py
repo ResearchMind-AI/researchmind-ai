@@ -152,12 +152,19 @@ async def generate_gaps(db: DBSession, session_id: int, topic: str,
     themes = analysis.get("themes") or []
     theme_text = "\n".join(f"- {t['label']}: {t['summary']}" for t in themes) or "(themes not generated)"
     paper_text = "\n\n".join(_paper_line(p, 400) for p in papers[:45])
+    from app.models.research import Gap
+    kept = db.query(Gap).filter(Gap.session_id == session_id,
+                                (Gap.pinned.is_(True)) | (Gap.source == "user")).all()
+    kept_text = "\n".join(f"- {g.title}" for g in kept) or "(none)"
 
     prompt = f"""TASK: find_gaps
 Research topic: "{topic}"
 
 Themes in the literature:
 {theme_text}
+
+Gaps the researcher is already tracking (do NOT repeat these):
+{kept_text}
 
 Papers (abstracts):
 {paper_text}
@@ -195,6 +202,8 @@ Return JSON: {{"gaps": [{{"title": "...", "gap_type": "...", "description": "...
     analysis = get_artifact(db, session_id, "analysis") or {}
     analysis["gaps"] = gaps
     save_artifact(db, session_id, "analysis", analysis)
+    from app.services.gaps_service import save_ai_gaps
+    save_ai_gaps(db, session_id, gaps)
     return gaps
 
 

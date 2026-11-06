@@ -112,6 +112,28 @@ class FakeLLM:
             return json.dumps({"title": "Fake Literature Review", "sections": [
                 {"heading": "Introduction", "paragraphs": [f"FAKE intro sentence [{a}]. Another claim [{b}][999]."]},
                 {"heading": "Conclusion", "paragraphs": [f"FAKE conclusion [{a}, {b}]."]}]})
+        if task == "writing_outline":
+            a, b = (nums + [1, 2])[:2]
+            mk = lambda h, k, w: {"heading": h, "kind": k, "points": [{"text": f"Fake point for {h}", "refs": [a, 999]}],
+                                  "agreements": [f"Studies agree [{a}][{b}]"], "disagreements": [],
+                                  "questions": ["What is the fake question?"], "target_words": w}
+            return json.dumps({"title": "Fake Review Title", "sections": [
+                mk("Introduction", "intro", 250), mk("Fake theme section", "theme", 450),
+                mk("Gaps and future directions", "gaps", 300), mk("Conclusion", "conclusion", 200)]})
+        if task == "check_section":
+            first = nums[0] if nums else 1
+            return json.dumps({"uncited_claims": [{"sentence": "Fake claim", "suggested_refs": [first, 999],
+                                                   "why": "needs a source"}],
+                               "citation_issues": [], "missing_points": ["Fake missing point"],
+                               "strengths": ["Clear structure"], "summary": "FAKE feedback (offline)."})
+        if task == "gap_evidence":
+            first = nums[0] if nums else 1
+            return json.dumps({"supporting": [{"n": first, "why": "fake support"}, {"n": 999, "why": "bad"}],
+                               "contradicting": [], "summary": "FAKE evidence summary.",
+                               "research_question": "Fake research question?"})
+        if task == "novelty_check":
+            return json.dumps({"verdict": "partially_addressed", "explanation": "FAKE novelty explanation.",
+                               "closest": [{"index": 0, "why": "fake closest"}, {"index": 99, "why": "bad"}]})
         if task == "paper_metadata":
             return json.dumps({"title": "Fake Uploaded Paper", "authors": ["Up Loader"], "year": 2024,
                                "abstract": "FAKE abstract extracted from upload."})

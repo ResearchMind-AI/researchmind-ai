@@ -39,6 +39,7 @@ def init_db():
 
     if engine.dialect.name != "postgresql":
         Base.metadata.create_all(bind=engine)
+        _add_missing_columns()
         return
 
     # The UI and API may start at the same time against an empty database.
@@ -48,3 +49,22 @@ def init_db():
         Base.metadata.create_all(bind=conn)
         # Databases created before the POC have a "papersource" enum without ARXIV.
         conn.execute(text("ALTER TYPE papersource ADD VALUE IF NOT EXISTS 'ARXIV'"))
+        # Columns added after the first deployment
+        for table, column, ddl in NEW_COLUMNS:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}"))
+
+
+# (table, column, type) added to existing tables after first release; create_all
+# only creates missing tables, so these are added explicitly and idempotently.
+NEW_COLUMNS = [
+    ("session_messages", "gap_id", "INTEGER"),
+]
+
+
+def _add_missing_columns():
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, column, ddl in NEW_COLUMNS:
+            if column not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))

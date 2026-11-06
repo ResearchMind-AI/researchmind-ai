@@ -58,6 +58,9 @@ class Session(Base):
     messages = relationship("SessionMessage", cascade="all, delete-orphan", passive_deletes=True,
                             order_by="SessionMessage.id")
     artifacts = relationship("SessionArtifact", cascade="all, delete-orphan", passive_deletes=True)
+    gaps = relationship("Gap", cascade="all, delete-orphan", passive_deletes=True, order_by="Gap.id")
+    writing_sections = relationship("WritingSection", cascade="all, delete-orphan", passive_deletes=True,
+                                    order_by="WritingSection.position")
 
     def __repr__(self):
         return f"<Session(id={self.id}, title={self.title}, status={self.status})>"
