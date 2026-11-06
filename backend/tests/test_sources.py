@@ -82,3 +82,10 @@ def test_modes_switch_with_keys(monkeypatch):
     assert (oa.mode, oa.default_max_results) == ("full", 50)
     assert oa._base_params()["api_key"] == "k1"
     assert s2.mode == "full" and s2._headers == {"x-api-key": "k2"}
+
+
+def test_postgres_scheme_is_normalised():
+    from app.config import Settings
+    s = Settings(DATABASE_URL="postgres://u:p@host:5432/db")
+    assert s.DATABASE_URL == "postgresql://u:p@host:5432/db"
+    assert Settings(DATABASE_URL="sqlite:///x.db").DATABASE_URL == "sqlite:///x.db"

@@ -1,12 +1,64 @@
 # Deploying the ResearchMind AI POC
 
-The POC is one Docker image (FastAPI API + Streamlit UI) plus PostgreSQL.
+The POC is one Docker image plus PostgreSQL. The image runs the Streamlit UI
+when `APP_MODE=ui` and the FastAPI API otherwise, on `$PORT` if the platform sets it.
 All state (papers, embeddings, chat, analysis, uploads) lives in Postgres, so
 there are no other volumes or services to manage.
 
 **You need:** an OpenAI API key (required, for embeddings). Optional: an
 Anthropic key (Claude for analysis/writing), free OpenAlex and Semantic Scholar
 keys (more and better results). Leave optional keys **empty**, not placeholder text.
+
+## ⭐ Recommended — Railway (stable link, no servers to manage, about $10–15/month)
+
+Railway builds the Dockerfile straight from GitHub and redeploys on every push.
+
+**1. Create the project**
+1. Sign in at railway.com with GitHub → **New Project** → **Deploy from GitHub repo** →
+   `ResearchMind-AI/researchmind-ai` (allow Railway's GitHub app to see the organisation if asked).
+2. Open the new service → **Settings**:
+   - **Source → Branch:** `poc` (switch to `master` once merged)
+   - **Source → Root Directory:** `/backend` (where the Dockerfile is)
+
+**2. Add the database**
+In the project canvas: **+ New → Database → PostgreSQL**.
+
+**3. Set variables** on the app service (**Variables → Raw Editor**, paste and fill in):
+```
+APP_MODE=ui
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+SECRET_KEY=<long random string>
+INVITE_CODE=<code your testers will need>
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=
+OPENALEX_API_KEY=
+SEMANTIC_SCHOLAR_API_KEY=
+PUBMED_API_KEY=
+OPENALEX_EMAIL=you@example.com
+PUBMED_EMAIL=you@example.com
+CROSSREF_EMAIL=you@example.com
+```
+Leave optional keys empty (not placeholder text). `${{Postgres.DATABASE_URL}}` is
+Railway's reference to the database's private address. Generate `SECRET_KEY` with
+`python -c "import secrets; print(secrets.token_hex(32))"`.
+
+**4. Get the link**
+Service → **Settings → Networking → Generate Domain**. Railway passes the port
+in `PORT`, which the image uses automatically. Optionally set
+**Deploy → Healthcheck Path** to `/_stcore/health`.
+
+Open the `….up.railway.app` link, create your account (with the invite code),
+and send testers the link + invite code. Tables are created on first start.
+
+**Optional:** add the REST API as a second service from the same repo
+(Root Directory `/backend`, `APP_MODE=api`, same variables, healthcheck `/health`).
+
+**Keeping costs down:** in **Workspace → Usage** set a usage limit, and turn on
+the service's sleep-when-idle option if testers only use it occasionally
+(the first visit after a sleep takes a few seconds). Choose the region closest to
+your testers in the service settings.
+
+**Updating:** push to the `poc` branch and Railway rebuilds and redeploys.
 
 ---
 

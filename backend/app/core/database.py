@@ -37,9 +37,14 @@ def init_db():
     import app.models  # noqa: F401  (registers all models)
     from sqlalchemy import text
 
-    Base.metadata.create_all(bind=engine)
+    if engine.dialect.name != "postgresql":
+        Base.metadata.create_all(bind=engine)
+        return
 
-    # Databases created before the POC have a "papersource" enum without ARXIV.
-    if engine.dialect.name == "postgresql":
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TYPE papersource ADD VALUE IF NOT EXISTS 'ARXIV'"))
+    # The UI and API may start at the same time against an empty database.
+    # A transaction-scoped advisory lock makes table creation run one at a time.
+    with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(7724831)"))
+        Base.metadata.create_all(bind=conn)
+        # Databases created before the POC have a "papersource" enum without ARXIV.
+        conn.execute(text("ALTER TYPE papersource ADD VALUE IF NOT EXISTS 'ARXIV'"))

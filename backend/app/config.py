@@ -43,6 +43,14 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://localhost:5173,http://localhost:8501"
     )
 
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def normalise_database_url(cls, v: str) -> str:
+        # Railway/Render/Heroku-style "postgres://" URLs are rejected by SQLAlchemy 2
+        if v.startswith("postgres://"):
+            return "postgresql://" + v[len("postgres://"):]
+        return v
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v):

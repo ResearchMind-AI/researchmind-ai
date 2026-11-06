@@ -16,7 +16,7 @@ docker compose up -d --build           # UI http://localhost:8501 · API http://
 docker compose --profile share up -d   # + public test link (see DEPLOY.md)
 ```
 
-See **[DEPLOY.md](DEPLOY.md)** for sharing a test link, AWS deployment and local dev.
+See **[DEPLOY.md](DEPLOY.md)** for deploying on Railway (recommended), sharing a test link from your own computer, AWS, and local dev.
 
 | Area | Where |
 |---|---|
