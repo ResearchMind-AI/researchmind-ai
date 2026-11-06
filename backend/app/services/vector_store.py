@@ -1,50 +1,43 @@
 """
-Vector store service using ChromaDB
+Vector store backed by the SQL database.
+
+Chunks and their embeddings are stored per session in the `paper_chunks`
+table and searched with cosine similarity in numpy. A POC session holds at
+most a few thousand chunks, so this is fast, needs no extra service, and
+works the same on PostgreSQL (AWS RDS) and SQLite. It replaces ChromaDB.
 """
 import logging
-from typing import List, Optional, Dict, Any
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+from typing import Any, Dict, List, Optional
 
-from app.config import settings
+import numpy as np
+from sqlalchemy.orm import Session as DBSession
+
+from app.core.database import SessionLocal
+from app.models.research import PaperChunk
 
 logger = logging.getLogger(__name__)
 
 
+def cosine_scores(matrix: np.ndarray, query: np.ndarray) -> np.ndarray:
+    """Cosine similarity of each row of `matrix` with `query`."""
+    if matrix.size == 0:
+        return np.array([])
+    m_norm = np.linalg.norm(matrix, axis=1)
+    q_norm = np.linalg.norm(query) or 1.0
+    m_norm[m_norm == 0] = 1.0
+    return (matrix @ query) / (m_norm * q_norm)
+
+
 class VectorStoreService:
-    """Service for managing vector embeddings in ChromaDB"""
+    """Store and search per-session paper chunk embeddings."""
 
-    def __init__(self):
-        # Initialize ChromaDB client
-        self.client = chromadb.PersistentClient(
-            path=settings.CHROMA_PERSIST_DIR,
-            settings=ChromaSettings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
-        )
-        logger.info(f"Initialized ChromaDB at {settings.CHROMA_PERSIST_DIR}")
+    def __init__(self, db: Optional[DBSession] = None):
+        self._own = db is None
+        self.db = db or SessionLocal()
 
-    def get_or_create_collection(self, session_id: int) -> chromadb.Collection:
-        """
-        Get or create a collection for a research session
-
-        Args:
-            session_id: Research session ID
-
-        Returns:
-            ChromaDB collection
-        """
-        collection_name = f"session_{session_id}"
-
-        # ChromaDB collection names must be 3-63 characters and match pattern
-        collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={"session_id": str(session_id)}
-        )
-
-        logger.info(f"Got/created collection: {collection_name}")
-        return collection
+    def close(self):
+        if self._own:
+            self.db.close()
 
     async def add_paper_embeddings(
         self,
@@ -52,206 +45,61 @@ class VectorStoreService:
         paper_id: int,
         chunks: List[str],
         embeddings: List[List[float]],
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Add paper embeddings to session collection
+        """Replace this paper's chunks in this session with new ones."""
+        self.db.query(PaperChunk).filter(
+            PaperChunk.session_id == session_id, PaperChunk.paper_id == paper_id
+        ).delete()
+        for i, (text, emb) in enumerate(zip(chunks, embeddings)):
+            self.db.add(PaperChunk(session_id=session_id, paper_id=paper_id,
+                                   chunk_index=i, text=text, embedding=list(map(float, emb))))
+        self.db.commit()
 
-        Args:
-            session_id: Research session ID
-            paper_id: Paper ID
-            chunks: List of text chunks
-            embeddings: List of embedding vectors
-            metadata: Optional metadata to attach to chunks
-        """
-        try:
-            collection = self.get_or_create_collection(session_id)
+    def has_embeddings(self, session_id: int, paper_id: int) -> bool:
+        return self.db.query(PaperChunk.id).filter(
+            PaperChunk.session_id == session_id, PaperChunk.paper_id == paper_id
+        ).first() is not None
 
-            # Build IDs and metadata for each chunk
-            ids = [f"paper_{paper_id}_chunk_{i}" for i in range(len(chunks))]
+    def search(self, session_id: int, query_embedding: List[float], n_results: int = 8,
+               paper_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        q = self.db.query(PaperChunk).filter(PaperChunk.session_id == session_id)
+        if paper_ids:
+            q = q.filter(PaperChunk.paper_id.in_(paper_ids))
+        rows = q.all()
+        if not rows:
+            return []
+        matrix = np.array([r.embedding for r in rows], dtype=np.float32)
+        scores = cosine_scores(matrix, np.array(query_embedding, dtype=np.float32))
+        order = np.argsort(-scores)[:n_results]
+        return [{"chunk_id": rows[i].id, "paper_id": rows[i].paper_id,
+                 "chunk_index": rows[i].chunk_index, "text": rows[i].text,
+                 "score": float(scores[i])} for i in order]
 
-            # Build metadata for each chunk
-            metadatas = []
-            for i in range(len(chunks)):
-                chunk_metadata = {
-                    "paper_id": str(paper_id),
-                    "chunk_index": i,
-                    "total_chunks": len(chunks)
-                }
-                if metadata:
-                    chunk_metadata.update(metadata)
-                metadatas.append(chunk_metadata)
+    async def search_papers(self, session_id: int, query_embedding: List[float],
+                            n_results: int = 10, filter_metadata: Optional[Dict] = None):
+        """Backwards-compatible wrapper around `search`."""
+        return self.search(session_id, query_embedding, n_results)
 
-            # Add to collection
-            collection.add(
-                ids=ids,
-                embeddings=embeddings,
-                documents=chunks,
-                metadatas=metadatas
-            )
+    def paper_vectors(self, session_id: int) -> Dict[int, np.ndarray]:
+        """Mean embedding per paper in the session (used for clustering)."""
+        rows = self.db.query(PaperChunk.paper_id, PaperChunk.embedding).filter(
+            PaperChunk.session_id == session_id).all()
+        grouped: Dict[int, List[List[float]]] = {}
+        for pid, emb in rows:
+            grouped.setdefault(pid, []).append(emb)
+        return {pid: np.mean(np.array(embs, dtype=np.float32), axis=0) for pid, embs in grouped.items()}
 
-            logger.info(f"Added {len(chunks)} chunks for paper {paper_id} to session {session_id}")
-
-        except Exception as e:
-            logger.error(f"Error adding embeddings to vector store: {e}")
-            raise
-
-    async def search_papers(
-        self,
-        session_id: int,
-        query_embedding: List[float],
-        n_results: int = 10,
-        filter_metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Search for relevant paper chunks in a session
-
-        Args:
-            session_id: Research session ID
-            query_embedding: Query embedding vector
-            n_results: Number of results to return
-            filter_metadata: Optional metadata filter
-
-        Returns:
-            Dictionary containing search results
-        """
-        try:
-            collection = self.get_or_create_collection(session_id)
-
-            # Query the collection
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where=filter_metadata,
-                include=["documents", "metadatas", "distances"]
-            )
-
-            # Format results
-            formatted_results = {
-                "chunks": results["documents"][0] if results["documents"] else [],
-                "metadatas": results["metadatas"][0] if results["metadatas"] else [],
-                "distances": results["distances"][0] if results["distances"] else []
-            }
-
-            logger.info(f"Found {len(formatted_results['chunks'])} results for session {session_id}")
-            return formatted_results
-
-        except Exception as e:
-            logger.error(f"Error searching vector store: {e}")
-            raise
-
-    async def delete_paper_embeddings(
-        self,
-        session_id: int,
-        paper_id: int
-    ) -> None:
-        """
-        Delete all embeddings for a paper from a session
-
-        Args:
-            session_id: Research session ID
-            paper_id: Paper ID to delete
-        """
-        try:
-            collection = self.get_or_create_collection(session_id)
-
-            # Delete all chunks for this paper
-            collection.delete(
-                where={"paper_id": str(paper_id)}
-            )
-
-            logger.info(f"Deleted embeddings for paper {paper_id} from session {session_id}")
-
-        except Exception as e:
-            logger.error(f"Error deleting embeddings from vector store: {e}")
-            raise
+    async def delete_paper_embeddings(self, session_id: int, paper_id: int) -> None:
+        self.db.query(PaperChunk).filter(
+            PaperChunk.session_id == session_id, PaperChunk.paper_id == paper_id
+        ).delete()
+        self.db.commit()
 
     async def delete_session_collection(self, session_id: int) -> None:
-        """
-        Delete entire collection for a session
-
-        Args:
-            session_id: Research session ID
-        """
-        try:
-            collection_name = f"session_{session_id}"
-            self.client.delete_collection(name=collection_name)
-
-            logger.info(f"Deleted collection for session {session_id}")
-
-        except Exception as e:
-            logger.error(f"Error deleting collection: {e}")
-            raise
+        self.db.query(PaperChunk).filter(PaperChunk.session_id == session_id).delete()
+        self.db.commit()
 
     async def get_collection_stats(self, session_id: int) -> Dict[str, Any]:
-        """
-        Get statistics about a session's vector collection
-
-        Args:
-            session_id: Research session ID
-
-        Returns:
-            Dictionary containing collection statistics
-        """
-        try:
-            collection = self.get_or_create_collection(session_id)
-
-            stats = {
-                "name": collection.name,
-                "count": collection.count(),
-                "metadata": collection.metadata
-            }
-
-            return stats
-
-        except Exception as e:
-            logger.error(f"Error getting collection stats: {e}")
-            raise
-
-    async def update_paper_metadata(
-        self,
-        session_id: int,
-        paper_id: int,
-        metadata: Dict[str, Any]
-    ) -> None:
-        """
-        Update metadata for all chunks of a paper
-
-        Args:
-            session_id: Research session ID
-            paper_id: Paper ID
-            metadata: New metadata to merge
-        """
-        try:
-            collection = self.get_or_create_collection(session_id)
-
-            # Get all chunks for this paper
-            results = collection.get(
-                where={"paper_id": str(paper_id)},
-                include=["metadatas"]
-            )
-
-            if not results["ids"]:
-                logger.warning(f"No chunks found for paper {paper_id} in session {session_id}")
-                return
-
-            # Update metadata for each chunk
-            ids = results["ids"]
-            metadatas = results["metadatas"]
-
-            updated_metadatas = []
-            for existing_metadata in metadatas:
-                updated_metadata = existing_metadata.copy()
-                updated_metadata.update(metadata)
-                updated_metadatas.append(updated_metadata)
-
-            collection.update(
-                ids=ids,
-                metadatas=updated_metadatas
-            )
-
-            logger.info(f"Updated metadata for {len(ids)} chunks of paper {paper_id}")
-
-        except Exception as e:
-            logger.error(f"Error updating metadata: {e}")
-            raise
+        count = self.db.query(PaperChunk).filter(PaperChunk.session_id == session_id).count()
+        return {"session_id": session_id, "total_chunks": count}

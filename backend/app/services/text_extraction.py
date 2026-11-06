@@ -4,8 +4,10 @@ Text extraction utilities for PDF and DOCX files
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-import PyPDF2
+import io
+
 import docx
+import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
@@ -15,51 +17,37 @@ class TextExtractor:
 
     @staticmethod
     def extract_from_pdf(file_path: str) -> Dict[str, Any]:
-        """
-        Extract text and metadata from PDF file
+        """Extract text and metadata from a PDF file (PyMuPDF)."""
+        with open(file_path, "rb") as f:
+            return TextExtractor.extract_pdf_bytes(f.read())
 
-        Args:
-            file_path: Path to PDF file
+    @staticmethod
+    def extract_pdf_bytes(data: bytes) -> Dict[str, Any]:
+        """Extract text and metadata from PDF bytes (PyMuPDF)."""
+        with fitz.open(stream=data, filetype="pdf") as pdf:
+            meta = pdf.metadata or {}
+            text = "\n\n".join(page.get_text("text") for page in pdf)
+            return {
+                "full_text": text.strip(),
+                "page_count": pdf.page_count,
+                "metadata": {"title": meta.get("title") or "", "author": meta.get("author") or "",
+                             "subject": meta.get("subject") or ""},
+            }
 
-        Returns:
-            Dictionary containing text and metadata
-        """
-        try:
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-
-                # Extract metadata
-                metadata = pdf_reader.metadata or {}
-                title = metadata.get('/Title', '')
-                author = metadata.get('/Author', '')
-                subject = metadata.get('/Subject', '')
-
-                # Extract text from all pages
-                text_parts = []
-                for page in pdf_reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        text_parts.append(text)
-
-                full_text = "\n\n".join(text_parts)
-
-                # Build result
-                result = {
-                    "full_text": full_text,
-                    "page_count": len(pdf_reader.pages),
-                    "metadata": {
-                        "title": title,
-                        "author": author,
-                        "subject": subject
-                    }
-                }
-
-                logger.info(f"Successfully extracted text from PDF: {file_path}")
-                return result
-
-        except Exception as e:
-            logger.error(f"Error extracting text from PDF {file_path}: {e}")
-            raise
+    @staticmethod
+    def extract_docx_bytes(data: bytes) -> Dict[str, Any]:
+        """Extract text from DOCX bytes."""
+        doc = docx.Document(io.BytesIO(data))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        parts.append(cell.text)
+        props = doc.core_properties
+        return {"full_text": "\n\n".join(parts),
+                "metadata": {"title": props.title or "", "author": props.author or "",
+                             "subject": props.subject or ""}}
 
     @staticmethod
     def extract_from_docx(file_path: str) -> Dict[str, Any]:

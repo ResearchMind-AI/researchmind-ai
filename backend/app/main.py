@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.config import settings, ensure_directories
-from app.core.database import get_db, engine, Base
+from app.core.database import get_db, init_db
 import logging
 
 # Configure logging
@@ -43,13 +43,16 @@ async def startup_event():
     """Run on application startup"""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
 
+    if settings.SECRET_KEY in ("change-me", "dev-secret-key-change-in-production") or len(settings.SECRET_KEY) < 16:
+        logger.warning("SECRET_KEY is a default/short value. Set a long random SECRET_KEY before deploying.")
+
     # Ensure required directories exist
     ensure_directories()
     logger.info("Required directories created/verified")
 
     # Create database tables
     try:
-        Base.metadata.create_all(bind=engine)
+        init_db()
         logger.info("Database tables created/verified")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
@@ -78,11 +81,14 @@ async def health_check(db: Session = Depends(get_db)):
         logger.error(f"Database health check failed: {e}")
         db_status = "unhealthy"
 
+    from app.services.discovery_service import source_status
     return {
         "status": "healthy" if db_status == "healthy" else "degraded",
         "app_name": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "database": db_status
+        "database": db_status,
+        "llm_provider": "offline" if settings.OFFLINE_DEMO else settings.llm_provider,
+        "sources": {s["name"]: s["mode"] for s in source_status()},
     }
 
 
@@ -99,19 +105,15 @@ async def root():
 
 
 # API v1 routers
-from app.api.v1 import auth, teams, sessions, papers, knowledge_map
+from app.api.v1 import auth, teams, sessions, papers, knowledge_map, research
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
 app.include_router(sessions.router, prefix="/api/v1/sessions", tags=["Sessions"])
 app.include_router(papers.router, prefix="/api/v1/papers", tags=["Papers"])
 app.include_router(knowledge_map.router, prefix="/api/v1/knowledge-map", tags=["Knowledge Map"])
+app.include_router(research.router, prefix="/api/v1/research", tags=["Research (POC)"])
 
-# Additional routers will be added as we build them:
-# - chat (RAG chat)
-# - gap_analysis (research gaps)
-# - sharing (collaboration)
-# - export (PDF export)
 
 
 if __name__ == "__main__":

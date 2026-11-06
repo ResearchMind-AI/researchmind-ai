@@ -22,6 +22,9 @@ from app.schemas.knowledge_map import (
 )
 from app.api.deps import get_current_active_user
 from app.api.v1.sessions import check_session_permission
+from app.models.session import SessionMemberRole
+
+EDIT_ROLES = [SessionMemberRole.LEAD, SessionMemberRole.CONTRIBUTOR]
 from app.services.knowledge_map_service import KnowledgeMapService
 import logging
 
@@ -49,7 +52,7 @@ async def generate_knowledge_map(
         Generation response with statistics
     """
     # Check session permission
-    check_session_permission(session_id, current_user, db)
+    check_session_permission(session_id, current_user, db, EDIT_ROLES)
 
     # Generate knowledge map
     service = KnowledgeMapService()
@@ -208,7 +211,7 @@ def update_node(
         )
 
     # Check session permission
-    check_session_permission(node.session_id, current_user, db)
+    check_session_permission(node.session_id, current_user, db, EDIT_ROLES)
 
     # Update fields
     if update_data.label is not None:
@@ -245,7 +248,7 @@ def delete_knowledge_map(
         db: Database session
     """
     # Check session permission
-    check_session_permission(session_id, current_user, db)
+    check_session_permission(session_id, current_user, db, EDIT_ROLES)
 
     # Delete relationships first (foreign key constraint)
     db.query(NodeRelationship).filter(NodeRelationship.session_id == session_id).delete()
