@@ -6,6 +6,7 @@ from app.models.user import User
 from app.models.team import Team, TeamMember, TeamRole
 from app.models.session import Session, SessionMember, SessionStatus, SessionMemberRole
 from app.models.paper import Paper, SessionPaper, PaperSource
+from app.models.knowledge_map import KnowledgeNode, NodeRelationship, NodeType, RelationType
 
 __all__ = [
     "User",
@@ -19,4 +20,8 @@ __all__ = [
     "Paper",
     "SessionPaper",
     "PaperSource",
+    "KnowledgeNode",
+    "NodeRelationship",
+    "NodeType",
+    "RelationType",
 ]

@@ -53,6 +53,7 @@ class Session(Base):
     team = relationship("Team", back_populates="sessions")
     members = relationship("SessionMember", back_populates="session", cascade="all, delete-orphan")
     session_papers = relationship("SessionPaper", back_populates="session", cascade="all, delete-orphan")
+    knowledge_nodes = relationship("KnowledgeNode", back_populates="session", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Session(id={self.id}, title={self.title}, status={self.status})>"

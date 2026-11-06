@@ -57,6 +57,10 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         description="OpenAI embedding model to use"
     )
+    CHAT_MODEL: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI chat model for RAG and analysis"
+    )
     CHUNK_SIZE: int = Field(
         default=1000,
         description="Text chunk size for embeddings"
