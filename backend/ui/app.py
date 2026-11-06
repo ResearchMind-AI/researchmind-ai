@@ -135,7 +135,7 @@ def sidebar(user: User):
                 f"Claude ({settings.CLAUDE_MODEL})" if settings.llm_provider == "anthropic"
                 else f"OpenAI ({settings.CHAT_MODEL})")
             st.markdown(f"🧠 **AI model**: {provider}")
-            st.caption("Add free API keys in the server's .env to switch 🟡 sources to full mode.")
+            st.caption("Add the free API keys to the server settings (.env, or Variables on Railway) to switch 🟡 sources to full mode.")
 
 
 # ── Session view ─────────────────────────────────────────────────────────────

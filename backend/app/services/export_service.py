@@ -94,6 +94,10 @@ def _split_name(name: str) -> Tuple[str, str]:
         last, first = [x.strip() for x in name.split(",", 1)]
     else:
         parts = name.split(" ")
+        if len(parts) >= 2 and re.fullmatch(r"[A-Z]{1,3}\.?", parts[-1]):
+            # "Zhou Z" / "Smith JA": surname first, initials last
+            letters = parts[-1].rstrip(".")
+            return " ".join(parts[:-1]), " ".join(f"{c}." for c in letters)
         last, first = parts[-1], " ".join(parts[:-1])
     initials = " ".join(f"{p[0]}." for p in re.split(r"[\s\-]+", first) if p)
     return last, initials
@@ -103,22 +107,30 @@ def _year(p: Paper) -> str:
     return str(p.publication_date.year) if p.publication_date else "n.d."
 
 
-def apa_in_text(p: Paper) -> str:
+def _apa_who(p: Paper) -> str:
     authors = p.authors or []
     if not authors:
-        short = p.title.split(":")[0][:40]
-        return f"{short}, {_year(p)}"
+        return p.title.split(":")[0][:40]
     last = [_split_name(a)[0] for a in authors]
     if len(last) == 1:
-        who = last[0]
-    elif len(last) == 2:
-        who = f"{last[0]} & {last[1]}"
-    else:
-        who = f"{last[0]} et al."
-    return f"{who}, {_year(p)}"
+        return last[0]
+    if len(last) == 2:
+        return f"{last[0]} & {last[1]}"
+    return f"{last[0]} et al."
 
 
-def apa_reference(p: Paper) -> str:
+def apa_in_text(p: Paper, year: Optional[str] = None) -> str:
+    return f"{_apa_who(p)}, {year or _year(p)}"
+
+
+def _end_title(title: str) -> str:
+    """Title followed by a full stop, unless it already ends with . ? or !"""
+    title = title.strip()
+    return title if title[-1:] in ".?!" else title + "."
+
+
+def apa_reference(p: Paper, year: Optional[str] = None) -> str:
+    year = year or _year(p)
     names = [f"{l}, {i}".strip().rstrip(",") for l, i in (_split_name(a) for a in (p.authors or []))]
     if len(names) > 20:
         names = names[:19] + ["…"] + names[-1:]
@@ -126,8 +138,8 @@ def apa_reference(p: Paper) -> str:
         author_str = ", ".join(names[:-1]) + ", & " + names[-1]
     else:
         author_str = names[0] if names else ""
-    title = p.title.rstrip(".")
-    parts = [f"{author_str} ({_year(p)}). {title}." if author_str else f"{title}. ({_year(p)})."]
+    title = _end_title(p.title)
+    parts = [f"{author_str} ({year}). {title}" if author_str else f"{title} ({year})."]
     if p.journal:
         parts.append(f"{p.journal}.")
     if p.doi:
@@ -145,13 +157,35 @@ def ieee_reference(p: Paper, n: int) -> str:
         author_str = ", ".join(names[:-1]) + ", and " + names[-1]
     else:
         author_str = names[0] if names else ""
-    bits = [f"[{n}]", f"{author_str}," if author_str else "", f"“{p.title.rstrip('.')},”"]
+    title = p.title.strip().rstrip(".")
+    quoted = f"\u201c{title}\u201d" if title[-1:] in "?!" else f"\u201c{title},\u201d"
+    bits = [f"[{n}]", f"{author_str}," if author_str else "", quoted]
     if p.journal:
         bits.append(f"{p.journal},")
     bits.append(f"{_year(p)}" + ("," if p.doi else "."))
     if p.doi:
         bits.append(f"doi: {p.doi}.")
     return " ".join(b for b in bits if b)
+
+
+def apa_year_labels(papers: List[Paper]) -> Dict[int, str]:
+    """APA disambiguation: same author(s) and year -> 2024a, 2024b (ordered by title)."""
+    groups: Dict[Tuple[str, str], List[Paper]] = {}
+    for p in papers:
+        groups.setdefault((_apa_who(p).lower(), _year(p)), []).append(p)
+    labels = {}
+    for (_, year), members in groups.items():
+        if len(members) == 1:
+            labels[members[0].id] = year
+            continue
+        for i, p in enumerate(sorted(members, key=lambda x: x.title.lower())):
+            labels[p.id] = f"{year}{chr(ord('a') + i)}" if year != "n.d." else f"n.d.-{chr(ord('a') + i)}"
+    return labels
+
+
+# A citation group like [3] or [3][7] or [3, 7], optionally already wrapped in
+# parentheses by the model, e.g. "([3][7])", so we never output "((...))".
+GROUP_RE = re.compile(r"\(\s*((?:\[\d+(?:\s*[,;]\s*\d+)*\]\s*)+)\)|((?:\[\d+(?:\s*[,;]\s*\d+)*\])+)")
 
 
 def format_review(review: Dict, papers: List[Paper], style: str = "APA") -> Dict:
@@ -168,25 +202,33 @@ def format_review(review: Dict, papers: List[Paper], style: str = "APA") -> Dict
                     if n in by_n and n not in order:
                         order.append(n)
     ieee_num = {n: i + 1 for i, n in enumerate(order)}
-
-    group_re = re.compile(r"(?:\[\d+(?:\s*[,;]\s*\d+)*\])+")
+    years = apa_year_labels([by_n[n] for n in order])
 
     def render(para: str) -> str:
         def repl(m: re.Match) -> str:
-            nums = [int(x) for x in re.findall(r"\d+", m.group(0)) if int(x) in by_n]
+            group = m.group(1) or m.group(2)
+            nums = []
+            for x in re.findall(r"\d+", group):
+                if int(x) in by_n and int(x) not in nums:
+                    nums.append(int(x))
             if not nums:
                 return ""
             if style == "IEEE":
                 return "[" + ", ".join(str(ieee_num[n]) for n in nums) + "]"
-            return "(" + "; ".join(apa_in_text(by_n[n]) for n in nums) + ")"
-        return group_re.sub(repl, para)
+            inner = "; ".join(apa_in_text(by_n[n], years[by_n[n].id]) for n in nums)
+            before = m.string[:m.start()]
+            inside_parens = m.group(2) is not None and before.count("(") > before.count(")")
+            return inner if inside_parens else f"({inner})"
+        out = GROUP_RE.sub(repl, para)
+        return re.sub(r" +([.,;:])", r"\1", out)
 
     sections = [{"heading": s["heading"], "paragraphs": [render(p) for p in s["paragraphs"]]}
                 for s in review["sections"]]
     if style == "IEEE":
         references = [ieee_reference(by_n[n], ieee_num[n]) for n in order]
     else:
-        references = sorted((apa_reference(by_n[n]) for n in order), key=lambda r: r.lower())
+        references = sorted((apa_reference(by_n[n], years[by_n[n].id]) for n in order),
+                            key=lambda r: r.lower())
     return {"title": review["title"], "topic": review.get("topic", ""), "sections": sections,
             "references": references, "style": style}
 
