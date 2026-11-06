@@ -120,3 +120,14 @@ def test_writing_guide_flow(db, analysed):
     assert "Prepared with ResearchMind AI" in text and "AI-generated draft" not in text
     assert "[77]" not in text and "References" in text
     assert render(db, s.id, review, "IEEE", "pdf", user_written=True)[:4] == b"%PDF"
+
+
+def test_outline_points_accept_plain_strings():
+    """Regression (live): gpt-4o-mini returned points as strings, which were silently dropped."""
+    allowed = {3, 14, 29}
+    assert ws._parse_point("Accuracy varies by specialty [14][29]", allowed) == \
+        {"text": "Accuracy varies by specialty", "refs": [14, 29]}
+    assert ws._parse_point({"point": "Readability matters", "references": ["[3]", 99]}, allowed) == \
+        {"text": "Readability matters", "refs": [3]}
+    assert ws._parse_point({"text": "x [5]", "refs": [14]}, allowed) == {"text": "x", "refs": [14]}
+    assert ws._parse_point("", allowed) is None and ws._parse_point(42, allowed) is None

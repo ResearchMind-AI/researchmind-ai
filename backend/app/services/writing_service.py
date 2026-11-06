@@ -48,7 +48,30 @@ def set_title(db: DBSession, session_id: int, title: str) -> None:
 
 
 def _clean_refs(items, allowed: set) -> List[int]:
-    return [n for n in (items or []) if isinstance(n, int) and n in allowed]
+    out = []
+    for n in items or []:
+        if isinstance(n, str) and n.strip().strip("[]").isdigit():
+            n = int(n.strip().strip("[]"))
+        if isinstance(n, int) and n in allowed and n not in out:
+            out.append(n)
+    return out
+
+
+def _parse_point(p, allowed: set) -> Optional[Dict]:
+    """Points may come back as {"text", "refs"} or as plain strings like "Accuracy varies [14][29]"."""
+    if isinstance(p, dict):
+        text = p.get("text") or p.get("point") or p.get("description") or ""
+        refs = p.get("refs") or p.get("references") or p.get("papers") or []
+    elif isinstance(p, str):
+        text, refs = p, []
+    else:
+        return None
+    text = str(text).strip()
+    inline = [int(x) for x in re.findall(r"\[(\d+)\]", text)]
+    text = re.sub(r"\s*(\[\d+\])+\s*", " ", text).strip().rstrip(" ,;")
+    if not text:
+        return None
+    return {"text": text, "refs": _clean_refs(list(refs) + inline, allowed)}
 
 
 async def generate_outline(db: DBSession, session_id: int, topic: str,
@@ -110,8 +133,7 @@ Return JSON: {{"title": "...", "sections": [{{"heading": "...", "kind": "theme",
         if not isinstance(sec, dict) or not sec.get("heading"):
             continue
         guidance = {
-            "points": [{"text": str(p.get("text", "")), "refs": _clean_refs(p.get("refs"), allowed)}
-                       for p in sec.get("points") or [] if isinstance(p, dict) and p.get("text")][:6],
+            "points": [pt for pt in (_parse_point(p, allowed) for p in sec.get("points") or []) if pt][:6],
             "agreements": [str(a) for a in sec.get("agreements") or []][:3],
             "disagreements": [str(d) for d in sec.get("disagreements") or []][:3],
             "questions": [str(q) for q in sec.get("questions") or []][:3],
