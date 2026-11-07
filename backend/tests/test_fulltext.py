@@ -122,3 +122,29 @@ def test_older_full_texts_are_refetched_once_with_page_markers(db):
     db.expire_all()
     assert db.get(Paper, p.id).extra_metadata.get("paged_v2") and "\f" in db.get(Paper, p.id).full_text
     assert events(owner.post(f"{base}/fulltext/stream"))[-1]["tried"] == 0
+
+
+def test_failed_refetch_keeps_existing_text_and_is_not_retried(db, monkeypatch):
+    owner = client_for("ft3@x.com")
+    s = owner.post("/api/v1/research/sessions", json={"topic": "LLMs for clinical decision support"}).json()
+    base = f"/api/v1/research/sessions/{s['id']}"
+    events(owner.post(f"{base}/analyse/stream", json={"max_papers": 6}))
+    from app.models.paper import Paper
+    from app.services import fulltext_service
+    with_text = [x for x in db.query(Paper).all() if x.full_text]
+    p = with_text[0]
+    extra = dict(p.extra_metadata)
+    extra.pop("paged_v2")
+    p.extra_metadata = extra
+    db.commit()
+    old = p.full_text
+
+    async def gone(_p):
+        raise fulltext_service.NoFullText("HTTP 403")
+    monkeypatch.setattr(fulltext_service, "get_full_text", gone)
+    ev = events(owner.post(f"{base}/fulltext/stream"))
+    assert ev[-1]["tried"] == 1 and ev[-1]["found"] == 0
+    assert ev[-1]["with_full_text"] == len(with_text)   # the old text still counts
+    db.expire_all()
+    assert db.get(Paper, p.id).full_text == old
+    assert events(owner.post(f"{base}/fulltext/stream"))[-1]["tried"] == 0

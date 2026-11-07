@@ -29,8 +29,8 @@ MAX_PAGES = 60
 DOWNLOAD_TIMEOUT = 30.0
 CONCURRENCY = 4
 MAX_PER_RUN = 40
-MIN_TEXT = 1500
-MAX_CHUNKS = 160  # passages per paper (a 60-page paper fits)  # characters; less than this is probably a scanned PDF or a landing page
+MIN_TEXT = 1500  # characters; less than this is probably a scanned PDF or a landing page
+MAX_CHUNKS = 160  # passages per paper (a 60-page paper fits)
 
 REFS_RE = re.compile(r"^\s*(references|bibliography|literature cited|works cited)\s*:?\s*$", re.I | re.M)
 
@@ -186,7 +186,8 @@ async def fetch_full_texts(db: DBSession, session_id: int, progress: Optional[Ca
     def needs(p: Paper) -> bool:
         extra = p.extra_metadata or {}
         if p.full_text:  # fetched before every passage carried its page: fetch once more
-            return extra.get("full_text_source") in ("arxiv", "openalex", "unpaywall", "offline") and not extra.get("paged_v2")
+            return (extra.get("full_text_source") in ("arxiv", "openalex", "unpaywall", "offline")
+                    and not extra.get("paged_v2") and not extra.get("paged_v2_tried"))
         return retry or not extra.get("full_text_tried")
     todo = [p for p in rows if needs(p)][:MAX_PER_RUN]
     kept_with_text = sum(1 for p in rows if p.full_text and p not in todo)
@@ -225,10 +226,12 @@ async def fetch_full_texts(db: DBSession, session_id: int, progress: Optional[Ca
             vectors = await embedder.generate_embeddings_batch(chunks)
             await store.add_paper_embeddings(session_id, p.id, chunks, vectors)
             found += 1
+        elif p.full_text:  # the refetch failed: keep the text we already have, and don't try again
+            extra["paged_v2_tried"] = True
         else:
             extra["full_text_error"] = err
         p.extra_metadata = extra
         db.commit()
-    total = kept_with_text + found
+    total = sum(1 for p in rows if p.full_text)
     say(f"Full text for {total} of {len(rows)} kept papers.")
     return {"tried": len(todo), "found": found, "with_full_text": total, "kept": len(rows)}
