@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Layers, RefreshCw } from "lucide-react";
+import { Layers, MessageSquare, RefreshCw } from "lucide-react";
 import { api } from "../api";
 import { CitedText, Empty, ErrorNote, PageLoading, RefBadges, Spinner, useToast } from "../components/ui";
 import { useSession } from "./SessionLayout";
@@ -9,11 +11,26 @@ export default function ThemesView() {
   const qc = useQueryClient();
   const toast = useToast();
   const analysis = useQuery({ queryKey: ["analysis", sid], queryFn: () => api.analysis(sid) });
+  const navigate = useNavigate();
+  const [autoNote, setAutoNote] = useState<string | null>(null);
   const regen = useMutation({
-    mutationFn: () => api.regenerateThemes(sid),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["analysis", sid] }); qc.invalidateQueries({ queryKey: ["session", sid] }); toast("Themes updated"); },
+    mutationFn: (_auto: boolean) => api.regenerateThemes(sid),
+    onSuccess: (_d, auto) => {
+      qc.invalidateQueries({ queryKey: ["analysis", sid] }); qc.invalidateQueries({ queryKey: ["session", sid] });
+      if (!auto) toast("Themes updated");
+    },
     onError: (e: Error) => toast(e.message, "error"),
   });
+  // Themes follow the kept papers: after a few papers are added or removed, they refresh by themselves.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    const d = analysis.data;
+    if (d?.refresh_due && session.can_edit && !running && !autoRan.current && !regen.isPending) {
+      autoRan.current = true;
+      setAutoNote(`Updated for your changes: ${d.changes?.summary ?? "papers changed"}.`);
+      regen.mutate(true);
+    }
+  }, [analysis.data, session.can_edit, running, regen]);
 
   if (analysis.isLoading) return <PageLoading />;
   if (analysis.error) return <ErrorNote error={analysis.error} />;
@@ -31,7 +48,7 @@ export default function ThemesView() {
         {running ? "Themes appear once papers have been found." : (
           <div className="flex flex-col items-center gap-3">
             <span>{papers.length ? "Group your papers into themes with key findings." : "Find papers first, then themes are generated automatically."}</span>
-            {session.can_edit && papers.length > 0 && <button className="btn btn-primary" onClick={() => regen.mutate()} disabled={regen.isPending}>{regen.isPending && <Spinner />}Generate themes</button>}
+            {session.can_edit && papers.length > 0 && <button className="btn btn-primary" onClick={() => regen.mutate(false)} disabled={regen.isPending}>{regen.isPending && <Spinner />}Generate themes</button>}
           </div>
         )}
       </Empty>
@@ -44,10 +61,11 @@ export default function ThemesView() {
       <section className="flex flex-col gap-3 rounded-card bg-navy p-6 text-navy-text">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-navy-muted">Overview · {themes.length} themes across {kept.length} kept papers</div>
-          {session.can_edit && <button className="btn btn-sm border-navy-line bg-transparent text-white hover:bg-navy-2" onClick={() => regen.mutate()} disabled={regen.isPending || running}>
-            {regen.isPending ? <Spinner /> : <RefreshCw size={14} aria-hidden="true" />}Regenerate
+          {session.can_edit && <button className="btn btn-sm border-navy-line bg-transparent text-white hover:bg-navy-2" onClick={() => regen.mutate(false)} disabled={regen.isPending || running}>
+            {regen.isPending ? <Spinner /> : <RefreshCw size={14} aria-hidden="true" />}{regen.isPending ? "Updating…" : "Regenerate"}
           </button>}
         </div>
+        {autoNote && <div className="text-[13px] text-teal-bright" role="status">{regen.isPending ? "Updating themes for your changes…" : autoNote}</div>}
         {analysis.data?.analysis?.overview && <p className="h-serif text-[19px] leading-relaxed text-white">{analysis.data.analysis.overview}</p>}
         <div className="flex flex-wrap gap-2">
           {themes.map((t, i) => <a key={i} href={`#theme-${i}`} className="rounded-full bg-white/[0.08] px-3 py-1 text-[13px] text-white no-underline hover:bg-white/15">{t.label} · {t.size}</a>)}
@@ -75,6 +93,11 @@ export default function ThemesView() {
               {refsFor(t.key_paper_ids).length > 0 && <span className="flex items-center">Key papers <RefBadges refs={refsFor(t.key_paper_ids).slice(0, 6)} papers={paperMap} /></span>}
             </div>
             {t.top_authors.length > 0 && <div className="flex flex-wrap gap-1.5">{t.top_authors.slice(0, 5).map((a) => <span key={a} className="chip">{a}</span>)}</div>}
+            {session.can_edit && (
+              <button className="btn btn-sm self-start" onClick={() => navigate(`/s/${sid}/chat`, { state: { ask: `What do the papers in the "${t.label}" theme find, and where do they disagree?` } })}>
+                <MessageSquare size={14} aria-hidden="true" />Ask about this theme
+              </button>
+            )}
           </article>
         ))}
       </div>

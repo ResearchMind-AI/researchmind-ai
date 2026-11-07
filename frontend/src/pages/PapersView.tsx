@@ -144,7 +144,8 @@ export default function PapersView() {
   }, [list, q, sort]);
 
   function refreshAfterChange() {
-    qc.invalidateQueries({ queryKey: ["session", sid] });
+    // Themes and the writing guide follow the kept papers, so they're re-checked next time they're opened.
+    for (const k of ["session", "analysis", "writing"]) qc.invalidateQueries({ queryKey: [k, sid] });
     qc.invalidateQueries({ queryKey: ["sessions"] });
   }
 
@@ -159,7 +160,7 @@ export default function PapersView() {
       if (patch.status === "removed") setJustRemoved(fresh);
       if (patch.status === "kept" && justRemoved?.id === p.id) setJustRemoved(null);
       if (patch.status === "kept" && !justRemoved) toast(`Paper ${p.n} restored`);
-      if (patch.status) refreshAfterChange();
+      if (patch.status || patch.is_key !== undefined) refreshAfterChange();
     } catch (e) {
       qc.setQueryData(["papers", sid], prev);
       toast((e as Error).message, "error");

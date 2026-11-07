@@ -115,6 +115,24 @@ await page.locator("textarea[id^=text-]").waitFor();
 const kept = await page.locator("textarea[id^=text-]").inputValue();
 if (!kept.startsWith("Large language models")) throw new Error("text not persisted");
 
+step("links: triage changes update the guide and themes; ask about a theme");
+await page.getByRole("link", { name: /^Papers/ }).click();
+for (let i = 0; i < 3; i++) {
+  await page.getByRole("button", { name: "Remove", exact: true }).first().click();
+  await page.getByText(/removed\./).waitFor();
+  await page.getByRole("button", { name: "Dismiss" }).last().click();
+}
+await page.getByRole("link", { name: "Write" }).click();
+await page.getByText(/Guide updated: .*papers were removed/).waitFor({ timeout: 60_000 });
+const still = await page.locator("textarea[id^=text-]").inputValue();
+if (!still.startsWith("Large language models")) throw new Error("guide refresh touched the user's text");
+await shot("07b-guide-updated");
+await page.getByRole("link", { name: /^Themes/ }).click();
+await page.getByText(/Updated for your changes/).waitFor({ timeout: 60_000 });
+await page.getByRole("button", { name: "Ask about this theme" }).first().click();
+await page.getByText(/What do the papers in the/).waitFor();
+await page.getByText(/Sources \(/).last().waitFor({ timeout: 30_000 });
+
 step("share");
 await page.getByRole("link", { name: "Share" }).last().click();
 await page.getByRole("heading", { name: "People with access" }).waitFor();

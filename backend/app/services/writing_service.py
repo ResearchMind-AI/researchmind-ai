@@ -57,6 +57,102 @@ def _clean_refs(items, allowed: set) -> List[int]:
     return out
 
 
+def _guide_context(db: DBSession, session_id: int, papers, refs: Dict[int, int]) -> str:
+    """Themes, tracked gaps (with novelty checks and notes), key papers and paper notes."""
+    from app.services.analysis_service import key_paper_ids
+    from app.services.links_service import gap_brief, tracked_gaps
+    analysis = get_artifact(db, session_id, "analysis") or {}
+    themes = analysis.get("themes") or []
+    tracked = tracked_gaps(db, session_id)
+    if not tracked:
+        tracked = db.query(Gap).filter(Gap.session_id == session_id, Gap.status != "dropped").order_by(Gap.id).limit(4).all()
+    key = key_paper_ids(papers)
+    theme_text = "\n".join(
+        f"- {t['label']}: {t['summary']} Papers: " + ", ".join(f"[{refs[i]}]" for i in t["paper_ids"][:12] if i in refs)
+        for t in themes) or "(no themes yet: infer them from the papers)"
+    gap_text = "\n".join(gap_brief(g) for g in tracked) or "(none)"
+    def line(p):
+        note = getattr(getattr(p, "session_link", None), "notes", None)
+        star = " [KEY PAPER]" if p.id in key else ""
+        return (f"[{refs[p.id]}]{star} {p.title} ({p.publication_date.year if p.publication_date else 'n.d.'})\n"
+                f"{(p.abstract or (p.full_text or '')[:500] or '')[:500]}" + (f"\nResearcher's note: {note[:300]}" if note else ""))
+    ordered = sorted(papers, key=lambda p: (p.id not in key, refs[p.id]))[:45]
+    return f"""Themes:
+{theme_text}
+
+Research gaps they are tracking (with novelty checks; where recent work partly covers a gap,
+the guide should say how to position the gap against it):
+{gap_text}
+
+Papers (refer to them only by bracket number). Papers marked KEY PAPER are the researcher's
+own picks: lead with them where they fit. Respect their notes.
+{chr(10).join(line(p) for p in ordered)}"""
+
+
+def _guidance_from(sec: Dict, allowed: set) -> Dict:
+    return {
+        "points": [pt for pt in (_parse_point(p, allowed) for p in sec.get("points") or []) if pt][:6],
+        "agreements": [str(a) for a in sec.get("agreements") or []][:3],
+        "disagreements": [str(d) for d in sec.get("disagreements") or []][:3],
+        "questions": [str(q) for q in sec.get("questions") or []][:3],
+        "target_words": int(sec["target_words"]) if str(sec.get("target_words", "")).isdigit() else None,
+    }
+
+
+def _save_basis(db: DBSession, session_id: int) -> None:
+    from app.services.links_service import basis
+    meta = dict(get_artifact(db, session_id, "writing_meta") or {})
+    meta["basis"] = basis(db, session_id)
+    save_artifact(db, session_id, "writing_meta", meta)
+
+
+def guidance_changes(db: DBSession, session_id: int) -> Optional[Dict]:
+    from app.services.links_service import basis, changes_since, describe
+    if not list_sections(db, session_id):
+        return None
+    ch = changes_since((get_artifact(db, session_id, "writing_meta") or {}).get("basis"), basis(db, session_id))
+    return {**ch, "summary": describe(ch)} if ch else None
+
+
+async def refresh_guidance(db: DBSession, session_id: int, topic: str,
+                           llm: Optional[LLMClient] = None) -> Dict:
+    """Update the suggested points for the user's CURRENT outline. Headings, order and the
+    user's text are untouched. Returns what changed, for the 'Guide updated' note."""
+    sections = list_sections(db, session_id)
+    if not sections:
+        raise WritingError("There is no outline yet.")
+    changes = guidance_changes(db, session_id) or {}
+    papers = list_session_papers(db, session_id)
+    if not papers:
+        raise WritingError("Keep at least one paper first.")
+    refs = reference_numbers(papers)
+    allowed = set(refs.values())
+    outline = "\n".join(f"{i + 1}. {s.heading} ({s.kind})" for i, s in enumerate(sections))
+    prompt = f"""TASK: writing_outline
+A researcher is WRITING their own literature review on: "{topic}"
+Do not write the review. Update their writing guide for the outline they already have.
+
+Their outline (keep exactly these sections, in this order):
+{outline}
+
+{_guide_context(db, session_id, papers, refs)}
+
+For each section give "points" (3-6 short phrases with "refs"), "agreements", "disagreements",
+"questions" and "target_words", as in a writing guide.
+Return JSON: {{"sections": [{{"heading": "...", "points": [{{"text": "...", "refs": [3]}}],
+"agreements": [], "disagreements": [], "questions": [], "target_words": 400}}]}}"""
+    data = await (llm or LLMClient()).complete_json(prompt, max_tokens=4000)
+    got = [s for s in data.get("sections") or [] if isinstance(s, dict)]
+    by_heading = {str(s.get("heading", "")).strip().lower(): s for s in got}
+    for i, sec in enumerate(sections):
+        new = by_heading.get(sec.heading.strip().lower()) or (got[i] if i < len(got) else None)
+        if new:
+            sec.guidance = _guidance_from(new, allowed)
+    db.commit()
+    _save_basis(db, session_id)
+    return changes
+
+
 def _parse_point(p, allowed: set) -> Optional[Dict]:
     """Points may come back as {"text", "refs"} or as plain strings like "Accuracy varies [14][29]"."""
     if isinstance(p, dict):
@@ -82,31 +178,12 @@ async def generate_outline(db: DBSession, session_id: int, topic: str,
         raise WritingError("Add papers to the session first.")
     refs = reference_numbers(papers)
     allowed = set(refs.values())
-    analysis = get_artifact(db, session_id, "analysis") or {}
-    themes = analysis.get("themes") or []
-    gaps = db.query(Gap).filter(Gap.session_id == session_id).order_by(Gap.pinned.desc(), Gap.id).all()
-    tracked = [g for g in gaps if g.pinned or g.source == "user"] or gaps[:4]
-
-    theme_text = "\n".join(
-        f"- {t['label']}: {t['summary']} Papers: " + ", ".join(f"[{refs[i]}]" for i in t["paper_ids"][:12] if i in refs)
-        for t in themes) or "(no themes yet: infer them from the papers)"
-    gap_text = "\n".join(f"- {g.title}: {g.description or ''}" for g in tracked) or "(none)"
-    paper_text = "\n\n".join(
-        f"[{refs[p.id]}] {p.title} ({p.publication_date.year if p.publication_date else 'n.d.'})\n"
-        f"{(p.abstract or (p.full_text or '')[:500] or '')[:500]}" for p in papers[:45])
-
+    ctx = _guide_context(db, session_id, papers, refs)
     prompt = f"""TASK: writing_outline
 A researcher is WRITING their own literature review on: "{topic}"
 Do not write the review. Give them a writing guide.
 
-Themes:
-{theme_text}
-
-Research gaps they are tracking:
-{gap_text}
-
-Papers (refer to them only by bracket number):
-{paper_text}
+{ctx}
 
 Create sections in this order: one "intro", one section per theme ("theme"), one "gaps", one "conclusion".
 For each section give:
@@ -132,13 +209,7 @@ Return JSON: {{"title": "...", "sections": [{{"heading": "...", "kind": "theme",
     for pos, sec in enumerate(data.get("sections") or []):
         if not isinstance(sec, dict) or not sec.get("heading"):
             continue
-        guidance = {
-            "points": [pt for pt in (_parse_point(p, allowed) for p in sec.get("points") or []) if pt][:6],
-            "agreements": [str(a) for a in sec.get("agreements") or []][:3],
-            "disagreements": [str(d) for d in sec.get("disagreements") or []][:3],
-            "questions": [str(q) for q in sec.get("questions") or []][:3],
-            "target_words": int(sec["target_words"]) if str(sec.get("target_words", "")).isdigit() else None,
-        }
+        guidance = _guidance_from(sec, allowed)
         kind = sec.get("kind") if sec.get("kind") in KINDS else "theme"
         row = by_heading.get(str(sec["heading"]).strip().lower())
         if row:
@@ -160,6 +231,7 @@ Return JSON: {{"title": "...", "sections": [{{"heading": "...", "kind": "theme",
     db.commit()
     if data.get("title") and not (get_artifact(db, session_id, "writing_meta") or {}).get("title"):
         set_title(db, session_id, str(data["title"]))
+    _save_basis(db, session_id)
     return list_sections(db, session_id)
 
 

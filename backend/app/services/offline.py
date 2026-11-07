@@ -121,7 +121,9 @@ class FakeLLM:
                 {"heading": "Conclusion", "paragraphs": [f"FAKE conclusion [{a}, {b}]."]}]})
         if task == "writing_outline":
             a, b = (nums + [1, 2])[:2]
-            mk = lambda h, k, w: {"heading": h, "kind": k, "points": [{"text": f"Fake point for {h}", "refs": [a, 999]}],
+            extra = " (leads with key papers)" if "[KEY PAPER]" in prompt else ""
+            extra += " (positions against closest work)" if "Novelty check:" in prompt else ""
+            mk = lambda h, k, w: {"heading": h, "kind": k, "points": [{"text": f"Fake point for {h}{extra}", "refs": [a, 999]}],
                                   "agreements": [f"Studies agree [{a}][{b}]"], "disagreements": [],
                                   "questions": ["What is the fake question?"], "target_words": w}
             return json.dumps({"title": "Fake Review Title", "sections": [

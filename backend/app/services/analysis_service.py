@@ -149,6 +149,8 @@ Return JSON: {{"overview": "...", "themes": [{{"cluster": 0, "label": "...", "su
     _mirror_nodes(db, session_id, NodeType.CONCEPT, [
         {"label": t["label"], "summary": t["summary"], "paper_ids": t["paper_ids"],
          "importance": t["size"] / max(1, len(vectors)), "keywords": t["top_authors"]} for t in themes])
+    from app.services.links_service import basis
+    result["basis"] = basis(db, session_id)
     analysis = get_artifact(db, session_id, "analysis") or {}
     analysis.update(result)
     save_artifact(db, session_id, "analysis", analysis)

@@ -13,6 +13,7 @@ interface Props {
   suggestions?: string[];
   placeholder?: string;
   compact?: boolean;
+  initialQuestion?: string;
 }
 
 function Bubble({ m, paperMap }: { m: ChatMessage; paperMap: Map<number, Paper> }) {
@@ -37,7 +38,7 @@ function Bubble({ m, paperMap }: { m: ChatMessage; paperMap: Map<number, Paper> 
   );
 }
 
-export default function ChatThread({ sid, gapId, paperMap, canAsk, suggestions = [], placeholder, compact }: Props) {
+export default function ChatThread({ sid, gapId, paperMap, canAsk, suggestions = [], placeholder, compact, initialQuestion }: Props) {
   const qc = useQueryClient();
   const key = ["messages", sid, gapId ?? 0];
   const history = useQuery({ queryKey: key, queryFn: () => api.messages(sid, gapId) });
@@ -73,6 +74,12 @@ export default function ChatThread({ sid, gapId, paperMap, canAsk, suggestions =
       else { await qc.invalidateQueries({ queryKey: key }); setPending([]); }
     } finally { setBusy(false); }
   }
+
+  // A question handed over from elsewhere (e.g. "Ask about this theme") is asked once history has loaded.
+  const asked = useRef(false);
+  useEffect(() => {
+    if (initialQuestion && canAsk && !history.isLoading && !asked.current) { asked.current = true; ask(initialQuestion); }
+  }); // eslint-disable-line react-hooks/exhaustive-deps
 
   function submit(e: FormEvent) { e.preventDefault(); ask(text); }
 

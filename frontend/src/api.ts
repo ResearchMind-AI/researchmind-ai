@@ -1,7 +1,7 @@
 // Small typed client for the FastAPI backend. Auth is an httpOnly cookie, so
 // requests just include credentials; no token handling in the browser.
 import type {
-  AppConfig, ChatMessage, Citation, Discovery, Example, Gap, Member, Paper, Screening, Section, SessionInfo,
+  AppConfig, Changes, ChatMessage, Citation, Discovery, Example, Gap, Member, Paper, Screening, Section, SessionInfo,
   SourceStatus, Themes, User, Writing, Feedback,
 } from "./types";
 
@@ -60,7 +60,7 @@ export const api = {
   updatePaper: (id: number, paperId: number, patch: Partial<Pick<Paper, "status" | "is_key" | "notes" | "removed_reason">>) =>
     request<Paper>("PATCH", `${S(id)}/papers/${paperId}`, patch),
   addByDoi: (id: number, doi: string) => request<Paper>("POST", `${S(id)}/papers/doi`, { doi }),
-  analysis: (id: number) => request<{ discovery: Discovery | null; analysis: Themes | null }>("GET", `${S(id)}/analysis`),
+  analysis: (id: number) => request<{ discovery: Discovery | null; analysis: Themes | null; changes: Changes | null; refresh_due: boolean }>("GET", `${S(id)}/analysis`),
   regenerateThemes: (id: number) => request<Themes>("POST", `${S(id)}/themes`),
 
   gaps: (id: number) => request<Gap[]>("GET", `${S(id)}/gaps`),
@@ -77,6 +77,7 @@ export const api = {
 
   writing: (id: number) => request<Writing>("GET", `${S(id)}/writing`),
   outline: (id: number) => request<Section[]>("POST", `${S(id)}/writing/outline`),
+  refreshGuidance: (id: number) => request<{ summary: string; sections: Section[] }>("POST", `${S(id)}/writing/guidance/refresh`),
   saveSection: (id: number, sectionId: number, user_text: string, heading?: string) =>
     request<Section>("PUT", `${S(id)}/writing/sections/${sectionId}`, { user_text, heading }),
   checkSection: (id: number, sectionId: number) =>

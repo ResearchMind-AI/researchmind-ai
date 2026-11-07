@@ -109,8 +109,14 @@ async def gaps(session_id: int, current_user: User = Depends(get_current_active_
 @router.get("/sessions/{session_id}/analysis")
 def analysis(session_id: int, current_user: User = Depends(get_current_active_user),
              db: DBSession = Depends(get_db)):
+    from app.services.links_service import THEMES_REFRESH_AFTER, basis, changes_since, describe
     s = _session(db, session_id, current_user)
-    return {"discovery": get_artifact(db, s.id, "discovery"), "analysis": get_artifact(db, s.id, "analysis")}
+    a = get_artifact(db, s.id, "analysis")
+    ch = changes_since((a or {}).get("basis"), basis(db, s.id)) if a and a.get("themes") else None
+    moved = (ch or {}).get("papers_added", 0) + (ch or {}).get("papers_removed", 0)
+    return {"discovery": get_artifact(db, s.id, "discovery"), "analysis": a,
+            "changes": {**ch, "summary": describe(ch)} if ch else None,
+            "refresh_due": moved >= THEMES_REFRESH_AFTER}
 
 
 @router.post("/sessions/{session_id}/chat")
@@ -286,7 +292,21 @@ def get_writing(session_id: int, current_user: User = Depends(get_current_active
                 db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user)
     return {"title": ws.get_title(db, s.id, f"Literature review: {s.topic or s.title}"),
-            "sections": [_section_out(x) for x in ws.list_sections(db, s.id)]}
+            "sections": [_section_out(x) for x in ws.list_sections(db, s.id)],
+            "guide_changes": ws.guidance_changes(db, s.id)}
+
+
+@router.post("/sessions/{session_id}/writing/guidance/refresh")
+async def refresh_guidance(session_id: int, current_user: User = Depends(get_current_active_user),
+                           db: DBSession = Depends(get_db)):
+    """Update the guide's suggestions for the current outline. Never changes the user's text."""
+    from app.services.links_service import describe
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        ch = await ws.refresh_guidance(db, s.id, s.topic or s.title)
+    except ws.WritingError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return {"summary": describe(ch) if ch else "", "sections": [_section_out(x) for x in ws.list_sections(db, s.id)]}
 
 
 @router.post("/sessions/{session_id}/writing/outline")

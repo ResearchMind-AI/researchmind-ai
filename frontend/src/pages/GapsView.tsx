@@ -102,12 +102,12 @@ function GapDetail({ g }: { g: Gap }) {
   const refs = g.evidence_paper_ids.map((i) => nById.get(i)).filter((n): n is number => !!n);
   const update = useMutation({
     mutationFn: (patch: Partial<Pick<Gap, "pinned" | "status">>) => api.updateGap(sid, g.id, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["gaps", sid] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["gaps", sid] }); qc.invalidateQueries({ queryKey: ["writing", sid] }); },
     onError: (e: Error) => toast(e.message, "error"),
   });
   const assess = useMutation({
     mutationFn: () => api.assessGap(sid, g.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["gaps", sid] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["gaps", sid] }); qc.invalidateQueries({ queryKey: ["writing", sid] }); },
     onError: (e: Error) => toast(e.message, "error"),
   });
   async function remove() {

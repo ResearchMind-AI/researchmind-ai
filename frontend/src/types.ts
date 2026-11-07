@@ -59,12 +59,16 @@ export interface Feedback {
   uncited_claims: { sentence: string; suggested_refs: number[]; why: string }[];
   citation_issues: { sentence: string; ref: number; issue: string }[];
   missing_points: string[]; strengths: string[]; summary: string; unknown_refs: number[]; words: number;
+  removed_refs?: { n: number; title: string; reason: string | null }[];
   target_words: number | null;
 }
 export interface Section {
   id: number; position: number; heading: string; kind: string; guidance: Guidance | null;
   user_text: string | null; feedback: Feedback | null; words: number;
 }
-export interface Writing { title: string; sections: Section[] }
+export interface Changes {
+  papers_added: number; papers_removed: number; key_changed: number; gaps_tracked: number; gaps_untracked: number; summary: string;
+}
+export interface Writing { title: string; sections: Section[]; guide_changes: Changes | null }
 export interface Example { title: string; sections: { heading: string; paragraphs: string[] }[]; references: string[]; style: string }
 export interface Member { user_id: number; email: string; full_name: string | null; role: string }

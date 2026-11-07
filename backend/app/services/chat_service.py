@@ -98,15 +98,20 @@ async def build_context(db: DBSession, session_id: int, question: str,
                     .order_by(SessionMessage.id.desc()).limit(6).all())
     history = [{"role": m.role, "content": m.content} for m in reversed(history_rows)]
 
+    from app.services.discovery_service import get_artifact
+    from app.services.links_service import gap_brief
     system = SYSTEM
+    themes = (get_artifact(db, session_id, "analysis") or {}).get("themes") or []
+    if themes:
+        system += "\n\nThemes in this session (use them to place findings, e.g. 'this sits under theme 2'):\n" + \
+            "\n".join(f"{i + 1}. {t['label']}: papers " + ", ".join(f"[{refs[p]}]" for p in t.get("paper_ids", [])[:8] if p in refs)
+                      for i, t in enumerate(themes))
     if gap is not None:
-        system = SYSTEM + (
-            f"\n\nThis conversation is about one research gap the researcher is exploring:\n"
-            f"Gap: {gap.title}\nDescription: {gap.description or '(none)'}\n"
-            f"Research question: {gap.research_question or '(not set)'}\n"
-            f"Researcher's notes: {gap.notes or '(none)'}\n"
-            "Help them examine whether the gap is real, how to scope it, possible methods, data and "
-            "risks. Be critical: say when the sources suggest the gap is already partly addressed.")
+        system += (
+            "\n\nThis conversation is about one research gap the researcher is exploring:\n"
+            + gap_brief(gap) +
+            "\nHelp them examine whether the gap is real, how to scope it, possible methods, data and "
+            "risks. Be critical: say when the sources or the novelty check suggest it is already partly addressed.")
 
     if blocks:
         prompt = ("Sources:\n\n" + "\n\n---\n\n".join(blocks) +

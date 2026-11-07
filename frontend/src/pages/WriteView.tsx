@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Download, Lightbulb, ListChecks, PenLine, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Download, Lightbulb, ListChecks, PenLine, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Feedback, Section, Writing } from "../types";
 import { CitedText, Empty, ErrorNote, PageLoading, RefBadges, Spinner, useToast } from "../components/ui";
@@ -40,6 +40,7 @@ function FeedbackCard({ f, paperMap }: { f: Feedback; paperMap: ReturnType<typeo
     { key: "cite", title: "Needs a citation", icon: AlertTriangle, tone: "border-amber-line bg-amber-wash", items: [
       ...f.uncited_claims.map((c) => <><span className="font-serif italic">“{c.sentence}”</span><span className="block text-[13px] text-ink-muted">{c.why}{c.suggested_refs.length > 0 && <> Try <RefBadges refs={c.suggested_refs} papers={paperMap} /></>}</span></>),
       ...f.citation_issues.map((c) => <><span className="font-serif italic">“{c.sentence}”</span><span className="block text-[13px] text-ink-muted">[{c.ref}] {c.issue}</span></>),
+      ...(f.removed_refs ?? []).map((r) => <>You cite <RefBadges refs={[r.n]} papers={paperMap} />, which you removed{r.reason ? ` (${r.reason.replace(/_/g, " ")})` : ""}. Restore it in Papers, or cite another paper.</>),
       ...(f.unknown_refs.length ? [<>You cite {f.unknown_refs.map((n) => `[${n}]`).join(" ")}, which {f.unknown_refs.length === 1 ? "isn't a paper" : "aren't papers"} in this session.</>] : []),
     ] },
     { key: "missing", title: "Not covered yet", icon: ListChecks, tone: "border-line bg-ground", items: f.missing_points.map((m) => <CitedText text={m} papers={paperMap} />) },
@@ -196,6 +197,21 @@ export default function WriteView() {
   const canEdit = session.can_edit;
   const refresh = () => qc.invalidateQueries({ queryKey: ["writing", sid] });
   const outline = useMutation({ mutationFn: () => api.outline(sid), onSuccess: refresh, onError: (e: Error) => toast(e.message, "error") });
+  // When papers, key papers or tracked gaps change, the guide's suggestions update by themselves.
+  // Only the suggestions change: headings, order and the researcher's text are never touched.
+  const [guideNote, setGuideNote] = useState<string | null>(null);
+  const guideRefresh = useMutation({
+    mutationFn: () => api.refreshGuidance(sid),
+    onSuccess: (r) => {
+      qc.setQueryData<Writing>(["writing", sid], (w) => w && { ...w, sections: r.sections, guide_changes: null });
+      setGuideNote(r.summary ? `Guide updated: ${r.summary}. Your writing wasn't changed.` : "Guide updated.");
+    },
+    onError: () => setGuideNote(null),
+  });
+  const guideRan = useRef(false);
+  useEffect(() => {
+    if (writing.data?.guide_changes && canEdit && !guideRan.current) { guideRan.current = true; guideRefresh.mutate(); }
+  }, [writing.data, canEdit, guideRefresh]);
   const addSection = useMutation({
     mutationFn: (heading: string) => api.addSection(sid, heading),
     onSuccess: (s) => { refresh(); setParams({ section: String(s.id) }); },
@@ -251,6 +267,11 @@ export default function WriteView() {
         </div>
       </div>
 
+      {(guideRefresh.isPending || guideNote) && (
+        <div className="flex items-center gap-2 text-[13px] text-ink-muted" role="status">
+          {guideRefresh.isPending ? <><Spinner />Updating the guide for your latest changes…</> : <><RefreshCw size={14} className="text-teal" aria-hidden="true" />{guideNote}</>}
+        </div>
+      )}
       <div className="grid items-start gap-5 lg:grid-cols-[280px_1fr]">
         <aside className="card flex flex-col gap-1 p-3 lg:sticky lg:top-6" aria-label="Outline">
           <div className="flex items-center justify-between px-2 pb-1.5 pt-1"><span className="sub">Outline</span><span className="text-xs text-ink-muted">{total} words</span></div>
