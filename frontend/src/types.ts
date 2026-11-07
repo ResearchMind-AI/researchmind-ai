@@ -18,7 +18,7 @@ export interface Paper {
   uploaded: boolean;
   status: "kept" | "removed"; is_key: boolean; notes: string | null; removed_reason: string | null;
   full_text: boolean; full_text_source: string | null; added_at: string | null;
-  added_by: number | null; status_by: number | null;
+  added_by: number | null; status_by: number | null; pages?: number | null; full_text_tried?: boolean;
 }
 export interface Screening {
   screened: number | null; found: number; kept: number; removed: number; key: number;

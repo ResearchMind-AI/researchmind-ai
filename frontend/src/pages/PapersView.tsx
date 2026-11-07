@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } 
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { BookOpen, ChevronDown, ChevronUp, ExternalLink, FileText, Pencil, Search, Star, Upload, X } from "lucide-react";
-import { api } from "../api";
+import { api, fullTextUrl, streamSSE } from "../api";
 import { REMOVE_REASONS, type CommentThread, type Paper } from "../types";
 import { CommentsButton, HistoryButton, ProposalBanner, useComments, who, type Collab } from "../components/collab";
 import { Empty, Modal, Spinner, useToast } from "../components/ui";
@@ -50,7 +50,7 @@ function PaperCard({ p, sid, canEdit, onUpdate, onUpload, collab, threads }: {
         <div className="flex flex-wrap items-center gap-1.5">
           {removed && <span className="chip">Removed{p.removed_reason ? ` · ${reasonLabel(p.removed_reason)}` : ""}</span>}
           {p.full_text
-            ? <span className="chip chip-teal"><FileText size={12} aria-hidden="true" />Full text{p.full_text_source === "upload" ? " · your PDF" : ""}</span>
+            ? <span className="chip chip-teal"><FileText size={12} aria-hidden="true" />Full text{p.pages ? ` · ${p.pages} pages` : ""}{p.full_text_source === "upload" ? " · your PDF" : ""}</span>
             : <span className="chip">Abstract only</span>}
           {!p.full_text && canEdit && !removed && <button className="text-[13px] font-semibold text-teal hover:underline" onClick={() => onUpload(p)}>Have the PDF? Upload it</button>}
           {p.citations > 0 && <span className="chip">Cited {p.citations.toLocaleString()}×</span>}
@@ -188,6 +188,25 @@ export default function PapersView() {
   }
 
   const [proposing, setProposing] = useState<Paper | null>(null);
+  const [ftBusy, setFtBusy] = useState<string | null>(null);
+  async function getFullTexts() {
+    setFtBusy("Looking for free copies…");
+    const retry = !kept.some((p) => !p.full_text && !p.full_text_tried);
+    try {
+      let found = 0;
+      await streamSSE<{ type: string; message?: string; found?: number }>(fullTextUrl(sid, retry), {}, (e) => {
+        if (e.type === "progress" && e.message) setFtBusy(e.message.replace(/…$/, "…"));
+        if (e.type === "done") found = e.found ?? 0;
+        if (e.type === "error") toast(e.message ?? "Full text failed", "error");
+      });
+      toast(found ? `Got the full text of ${found} more paper${found > 1 ? "s" : ""}` : "No more free copies found. You can upload PDFs you have.");
+    } catch (e) { toast((e as Error).message, "error"); }
+    finally {
+      setFtBusy(null);
+      qc.invalidateQueries({ queryKey: ["papers", sid] });
+      qc.invalidateQueries({ queryKey: ["notices", sid] });
+    }
+  }
   const othersNames = collab.members.filter((m) => m.id !== collab.me && m.can_edit).map((m) => m.name.split(" ")[0]).join(" or ") || "Your collaborator";
   async function update(p: Paper, patch: Partial<Paper>) {
     if (collab.collaborative && patch.status === "removed" && !patch.removed_reason) { setProposing(p); return; }
@@ -289,9 +308,14 @@ export default function PapersView() {
         <span className="text-ink-muted" aria-hidden="true">→</span>
         <div><div className="text-2xl font-bold text-teal">{kept.length}</div><div className="text-xs font-semibold text-ink-muted">Kept</div></div>
         <div className="ml-1"><div className="text-2xl font-bold text-ink-muted">{removed.length}</div><div className="text-xs font-semibold text-ink-muted">Removed</div></div>
-        <div className="flex min-w-[220px] flex-1 flex-col gap-1.5 md:ml-auto md:max-w-[320px]">
-          <div className="flex justify-between text-[13px]"><span className="font-semibold">Full text for {withText} of {kept.length}</span><span className="text-ink-muted">rest: abstract only</span></div>
+        <div className="flex min-w-[220px] flex-1 flex-col gap-1.5 md:ml-auto md:max-w-[340px]">
+          <div className="flex justify-between text-[13px]"><span className="font-semibold">Full text for {withText} of {kept.length}</span>
+            {ftBusy ? <span className="flex items-center gap-1.5 text-ink-muted"><Spinner />{ftBusy}</span>
+              : canEdit && withText < kept.length && !running
+                ? <button className="font-semibold text-teal hover:underline" onClick={getFullTexts}>{kept.some((p) => !p.full_text && !p.full_text_tried) ? "Get full texts" : "Try again"}</button>
+                : <span className="text-ink-muted">rest: abstract only</span>}</div>
           <div className="h-2 rounded-full bg-chip" aria-hidden="true"><div className="h-2 rounded-full bg-teal" style={{ width: `${kept.length ? (withText / kept.length) * 100 : 0}%` }} /></div>
+          {withText < kept.length && !ftBusy && <span className="text-xs text-ink-muted">Only free, legal copies are used. Have the PDF? Upload it on the paper.</span>}
         </div>
       </section>
 

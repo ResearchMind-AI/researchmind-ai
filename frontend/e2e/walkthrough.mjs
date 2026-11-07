@@ -62,6 +62,11 @@ await page.getByLabel("DOI or doi.org link").fill("10.1234/e2e.1");
 await page.getByRole("button", { name: "Add paper" }).click();
 await page.getByText(/Added as paper/).waitFor();
 await shot("03c-triage");
+step("full text: badges with pages, try again");
+await page.getByText(/Full text · 4 pages/).first().waitFor();
+await page.getByText(/Full text for \d+ of \d+/).waitFor();
+await page.getByRole("button", { name: /Try again|Get full texts/ }).click();
+await page.getByText(/No more free copies found|Got the full text of/).waitFor({ timeout: 30_000 });
 
 step("themes");
 await page.getByRole("link", { name: /^Explore/ }).click();

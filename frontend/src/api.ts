@@ -162,3 +162,4 @@ export type ChatEvent = { type: "token"; text: string }
   | { type: "done"; answer: string; citations: Citation[] } | { type: "error"; message: string };
 export const analyseUrl = (id: number) => `${S(id)}/analyse/stream`;
 export const chatUrl = (id: number) => `${S(id)}/chat/stream`;
+export const fullTextUrl = (id: number, retry = false) => `${S(id)}/fulltext/stream${retry ? "?retry=true" : ""}`;

@@ -42,6 +42,7 @@ def init_db():
         _add_missing_columns()
         with engine.begin() as conn:
             backfill_ref_numbers(conn)
+            backfill_section_owners(conn)
         return
 
     # The UI and API may start at the same time against an empty database.
@@ -55,6 +56,7 @@ def init_db():
         for table, column, ddl in NEW_COLUMNS:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}"))
         backfill_ref_numbers(conn)
+        backfill_section_owners(conn)
 
 
 # (table, column, type) added to existing tables after first release; create_all
@@ -70,6 +72,13 @@ NEW_COLUMNS = [
     ("writing_sections", "owner_id", "INTEGER"),
     ("writing_sections", "version", "INTEGER NOT NULL DEFAULT 0"),
 ]
+
+
+def backfill_section_owners(conn) -> None:
+    """Sections written before ownership existed belong to whoever last wrote them."""
+    from sqlalchemy import text
+    conn.execute(text("UPDATE writing_sections SET owner_id = updated_by "
+                      "WHERE owner_id IS NULL AND updated_by IS NOT NULL AND COALESCE(user_text, '') <> ''"))
 
 
 def backfill_ref_numbers(conn) -> None:

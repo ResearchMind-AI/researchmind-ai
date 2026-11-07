@@ -501,7 +501,8 @@ def _paper_dict(p) -> dict:
             "removed_reason": sp.removed_reason,
             "full_text": bool(p.full_text), "full_text_source": extra.get("full_text_source")
                          or ("upload" if extra.get("uploaded") and p.full_text else None),
-            "added_at": sp.added_at, "added_by": sp.added_by_user_id, "status_by": sp.status_by_user_id}
+            "added_at": sp.added_at, "added_by": sp.added_by_user_id, "status_by": sp.status_by_user_id,
+            "pages": extra.get("pages"), "full_text_tried": bool(extra.get("full_text_tried"))}
 
 
 def _paper_out(db: DBSession, session_id: int, paper_id: int) -> dict:
@@ -643,6 +644,15 @@ async def analyse_stream(session_id: int, req: DiscoverRequest,
                 await generate_themes(jdb, sid, topic)
                 say("Looking for research gaps…")
                 await generate_gaps(jdb, sid, topic)
+                # Last, so papers, themes and gaps are ready first: free full texts for kept papers.
+                from app.services.fulltext_service import fetch_full_texts
+                try:
+                    ft = await fetch_full_texts(jdb, sid, progress=say)
+                    if ft["found"]:
+                        cs.log(jdb, sid, uid, "full_texts", f"got the full text of {ft['found']} papers", "session", sid)
+                except Exception as e:  # full text is a bonus; never fail the search over it
+                    jdb.rollback()
+                    say(f"Couldn't get full texts this time ({str(e)[:80]}). You can retry from Papers.")
                 queue.put_nowait({"type": "done", "stats": stats})
             except Exception as e:  # surface failures to the UI instead of hanging
                 queue.put_nowait({"type": "error", "message": f"Analysis failed: {e}"})
@@ -876,3 +886,38 @@ def presence(session_id: int, body: PresenceBody, current_user: User = Depends(g
     s = _session(db, session_id, current_user)
     cs.heartbeat(s.id, current_user.id, body.where)
     return cs.present(db, s.id, current_user.id)
+
+
+@router.post("/sessions/{session_id}/fulltext/stream")
+async def fulltext_stream(session_id: int, retry: bool = False, current_user: User = Depends(get_current_active_user),
+                          db: DBSession = Depends(get_db)):
+    """Look for free full texts for kept papers that don't have one (retry=true tries again)."""
+    from app.services.fulltext_service import fetch_full_texts
+    s = _session(db, session_id, current_user, edit=True)
+    sid, uid = s.id, current_user.id
+
+    async def events():
+        queue: asyncio.Queue = asyncio.Queue()
+        say = lambda m: queue.put_nowait({"type": "progress", "message": m})  # noqa: E731
+
+        async def job():
+            jdb = SessionLocal()
+            try:
+                r = await fetch_full_texts(jdb, sid, progress=say, retry=retry)
+                if r["found"]:
+                    cs.log(jdb, sid, uid, "full_texts", f"got the full text of {r['found']} papers", "session", sid)
+                queue.put_nowait({"type": "done", **r})
+            except Exception as e:
+                queue.put_nowait({"type": "error", "message": f"Full text failed: {e}"})
+            finally:
+                jdb.close()
+
+        task = asyncio.create_task(job())
+        while True:
+            ev = await queue.get()
+            yield _sse(ev)
+            if ev["type"] in ("done", "error"):
+                break
+        await task
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
