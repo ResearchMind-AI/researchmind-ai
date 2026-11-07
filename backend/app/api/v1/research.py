@@ -7,7 +7,8 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
@@ -25,6 +26,7 @@ from app.services.upload_service import UploadError, add_uploaded_paper
 from app.services import gaps_service as gs
 from app.services import writing_service as ws
 from app.services import triage_service as ts
+from app.services import collab_service as cs
 
 router = APIRouter()
 
@@ -68,6 +70,7 @@ class GapUpdate(BaseModel):
 class SectionUpdate(BaseModel):
     user_text: str
     heading: Optional[str] = None
+    base_version: Optional[int] = Field(None, description="The version you started editing; a newer one means a conflict")
 
 
 class ExportRequest(BaseModel):
@@ -152,7 +155,11 @@ async def upload(session_id: int, file: UploadFile = File(...), attach_to: Optio
                                          await file.read(), attach_to=attach_to)
     except (UploadError, ts.TriageError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    return {"paper_id": paper.id, "title": paper.title, "attached": bool(getattr(paper, "attached", False))}
+    attached = bool(getattr(paper, "attached", False))
+    n = ts.get_link(db, s.id, paper.id).ref_no
+    cs.log(db, s.id, current_user.id, "paper_full_text" if attached else "paper_added",
+           f"uploaded the PDF of paper {n}" if attached else f"added paper {n} from a PDF", "paper", paper.id)
+    return {"paper_id": paper.id, "title": paper.title, "attached": attached}
 
 
 class PaperUpdate(BaseModel):
@@ -172,10 +179,30 @@ def update_paper(session_id: int, paper_id: int, body: PaperUpdate,
     """Keep or remove a paper, mark it as a key paper, or edit its note."""
     s = _session(db, session_id, current_user, edit=True)
     try:
-        ts.update_paper(db, s.id, paper_id, current_user.id, status=body.status, is_key=body.is_key,
-                        notes=body.notes, removed_reason=body.removed_reason)
+        sp = ts.get_link(db, s.id, paper_id)
+        if body.status is not None and body.status != sp.status:
+            # Removing or restoring a paper is a big change: a proposal when others can edit too.
+            kind = "remove_paper" if body.status == "removed" else "restore_paper"
+            if body.status not in ts.STATUSES:
+                raise ts.TriageError("Status must be 'kept' or 'removed'.")
+            prop = cs.change_or_propose(db, s, current_user, kind, paper_id,
+                                        {"reason": body.removed_reason} if body.removed_reason else None)
+            if prop is not None:
+                return JSONResponse(status_code=202, content=jsonable_encoder(
+                    {"proposal": cs.proposal_out(db, prop), "paper": _paper_out(db, s.id, paper_id)}))
+        elif body.removed_reason is not None:
+            ts.update_paper(db, s.id, paper_id, current_user.id, removed_reason=body.removed_reason)
+        if body.is_key is not None and body.is_key != sp.is_key:
+            ts.update_paper(db, s.id, paper_id, current_user.id, is_key=body.is_key)
+            cs.log(db, s.id, current_user.id, "paper_key" if body.is_key else "paper_unkey",
+                   f"{'marked' if body.is_key else 'unmarked'} paper {sp.ref_no} as a key paper", "paper", paper_id)
+        if body.notes is not None:
+            ts.update_paper(db, s.id, paper_id, current_user.id, notes=body.notes)
+            cs.log(db, s.id, current_user.id, "paper_note", f"edited the note on paper {sp.ref_no}", "paper", paper_id)
     except ts.TriageError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    except cs.CollabError as e:
+        raise _collab_http(e)
     return _paper_out(db, s.id, paper_id)
 
 
@@ -188,7 +215,9 @@ async def add_by_doi(session_id: int, body: DoiBody,
         paper = await add_paper_by_doi(db, s.id, current_user.id, body.doi)
     except AddPaperError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    return _paper_out(db, s.id, paper.id)
+    out = _paper_out(db, s.id, paper.id)
+    cs.log(db, s.id, current_user.id, "paper_added", f"added paper {out['n']} by DOI", "paper", paper.id)
+    return out
 
 
 @router.post("/sessions/{session_id}/export")
@@ -233,7 +262,7 @@ def _gap_out(g) -> dict:
     return {"id": g.id, "title": g.title, "description": g.description, "gap_type": g.gap_type,
             "research_question": g.research_question, "confidence": g.confidence,
             "evidence_paper_ids": g.evidence_paper_ids or [], "source": g.source, "pinned": g.pinned,
-            "status": g.status, "notes": g.notes, "assessment": g.assessment}
+            "status": g.status, "notes": g.notes, "assessment": g.assessment, "created_by": g.created_by}
 
 
 @router.get("/sessions/{session_id}/gaps")
@@ -251,6 +280,7 @@ async def add_gap(session_id: int, req: GapCreate, current_user: User = Depends(
         g = gs.add_user_gap(db, s.id, current_user.id, req.title, req.description)
     except gs.GapError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    cs.log(db, s.id, current_user.id, "gap_added", f"added a gap: \"{g.title}\"", "gap", g.id)
     if req.assess:
         await gs.assess_gap(db, g)
     return _gap_out(g)
@@ -260,26 +290,46 @@ async def add_gap(session_id: int, req: GapCreate, current_user: User = Depends(
 def update_gap(session_id: int, gap_id: int, req: GapUpdate,
                current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user, edit=True)
+    g = _gap(db, s, gap_id)
     try:
-        return _gap_out(gs.update_gap(db, _gap(db, s, gap_id), pinned=req.pinned, status=req.status,
-                                      notes=req.notes, research_question=req.research_question))
+        if req.pinned is False and g.pinned:
+            prop = cs.change_or_propose(db, s, current_user, "untrack_gap", g.id)
+            if prop is not None:
+                return JSONResponse(status_code=202, content=jsonable_encoder(
+                    {"proposal": cs.proposal_out(db, prop), "gap": _gap_out(g)}))
+        elif req.pinned is True and not g.pinned:
+            gs.update_gap(db, g, pinned=True)
+            cs.log(db, s.id, current_user.id, "gap_tracked", f"tracked gap \"{g.title}\"", "gap", g.id)
+        if req.status is not None and req.status != g.status:
+            gs.update_gap(db, g, status=req.status)
+            cs.log(db, s.id, current_user.id, "gap_status", f"marked gap \"{g.title}\" as {req.status}", "gap", g.id)
+        if req.notes is not None or req.research_question is not None:
+            gs.update_gap(db, g, notes=req.notes, research_question=req.research_question)
+            cs.log(db, s.id, current_user.id, "gap_note", f"edited notes on gap \"{g.title}\"", "gap", g.id)
+        return _gap_out(g)
     except gs.GapError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    except cs.CollabError as e:
+        raise _collab_http(e)
 
 
 @router.post("/sessions/{session_id}/gaps/{gap_id}/assess")
 async def assess_gap(session_id: int, gap_id: int, current_user: User = Depends(get_current_active_user),
                      db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user, edit=True)
-    return _gap_out(await gs.assess_gap(db, _gap(db, s, gap_id)))
+    g = await gs.assess_gap(db, _gap(db, s, gap_id))
+    verdict = ((g.assessment or {}).get("novelty") or {}).get("verdict", "unknown").replace("_", " ")
+    cs.log(db, s.id, current_user.id, "gap_checked", f"checked gap \"{g.title}\": {verdict}", "gap", g.id)
+    return _gap_out(g)
 
 
 # ── Writing guide ────────────────────────────────────────────────────────────
 
-def _section_out(x) -> dict:
+def _section_out(x, db: Optional[DBSession] = None) -> dict:
     return {"id": x.id, "position": x.position, "heading": x.heading, "kind": x.kind,
             "guidance": x.guidance, "user_text": x.user_text, "feedback": x.feedback,
-            "words": ws.word_count(x.user_text)}
+            "words": ws.word_count(x.user_text), "owner_id": x.owner_id, "version": x.version or 0,
+            "updated_by": x.updated_by, "updated_at": x.updated_at}
 
 
 def _section(db: DBSession, s: Session, section_id: int):
@@ -326,7 +376,12 @@ async def writing_outline(session_id: int, current_user: User = Depends(get_curr
 def save_section(session_id: int, section_id: int, req: SectionUpdate,
                  current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user, edit=True)
-    return _section_out(ws.save_text(db, _section(db, s, section_id), req.user_text, current_user.id, req.heading))
+    try:
+        x = cs.save_section_text(db, s, current_user, _section(db, s, section_id), req.user_text, req.heading,
+                                 req.base_version)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    return _section_out(x, db)
 
 
 @router.post("/sessions/{session_id}/writing/sections/{section_id}/check")
@@ -446,7 +501,7 @@ def _paper_dict(p) -> dict:
             "removed_reason": sp.removed_reason,
             "full_text": bool(p.full_text), "full_text_source": extra.get("full_text_source")
                          or ("upload" if extra.get("uploaded") and p.full_text else None),
-            "added_at": sp.added_at}
+            "added_at": sp.added_at, "added_by": sp.added_by_user_id, "status_by": sp.status_by_user_id}
 
 
 def _paper_out(db: DBSession, session_id: int, paper_id: int) -> dict:
@@ -485,7 +540,12 @@ def remove_member(session_id: int, user_id: int, current_user: User = Depends(ge
 def delete_gap(session_id: int, gap_id: int, current_user: User = Depends(get_current_active_user),
                db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user, edit=True)
-    gs.delete_gap(db, _gap(db, s, gap_id))
+    try:
+        prop = cs.change_or_propose(db, s, current_user, "delete_gap", _gap(db, s, gap_id).id)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    if prop is not None:
+        return JSONResponse(status_code=202, content=jsonable_encoder({"proposal": cs.proposal_out(db, prop)}))
     return Response(status_code=204)
 
 
@@ -494,7 +554,11 @@ def add_section(session_id: int, body: SectionCreate, current_user: User = Depen
                 db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user, edit=True)
     try:
-        return _section_out(ws.add_section(db, s.id, body.heading))
+        x = ws.add_section(db, s.id, body.heading)
+        x.owner_id = current_user.id
+        db.commit()
+        cs.log(db, s.id, current_user.id, "section_added", f"added section \"{x.heading}\"", "section", x.id)
+        return _section_out(x, db)
     except ws.WritingError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
@@ -503,7 +567,12 @@ def add_section(session_id: int, body: SectionCreate, current_user: User = Depen
 def delete_section(session_id: int, section_id: int, current_user: User = Depends(get_current_active_user),
                    db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user, edit=True)
-    ws.delete_section(db, _section(db, s, section_id))
+    try:
+        prop = cs.change_or_propose(db, s, current_user, "delete_section", _section(db, s, section_id).id)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    if prop is not None:
+        return JSONResponse(status_code=202, content=jsonable_encoder({"proposal": cs.proposal_out(db, prop)}))
     return Response(status_code=204)
 
 
@@ -569,6 +638,7 @@ async def analyse_stream(session_id: int, req: DiscoverRequest,
                 if stats.get("error"):
                     queue.put_nowait({"type": "error", "message": stats["error"]})
                     return
+                cs.log(jdb, sid, uid, "papers_found", f"found {stats.get('added', 0)} new papers", "session", sid)
                 say("Finding themes…")
                 await generate_themes(jdb, sid, topic)
                 say("Looking for research gaps…")
@@ -643,3 +713,166 @@ async def chat_stream(session_id: int, req: ChatRequest, current_user: User = De
             cdb.close()
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+# ── Working together ──────────────────────────────────────────────────────────
+
+def _collab_http(e: "cs.CollabError") -> HTTPException:
+    detail = str(e) if not e.data else {"message": str(e), **e.data}
+    return HTTPException(e.status, detail)
+
+
+class ProposalBody(BaseModel):
+    kind: str
+    target_id: int
+    reason: Optional[str] = None          # paper removal reason code
+    reason_text: Optional[str] = Field(None, max_length=1000)
+
+
+class DecisionBody(BaseModel):
+    decision: str = Field(..., pattern="^(approve|reject|withdraw|accept)$")
+
+
+class CommentBody(BaseModel):
+    target_type: Optional[str] = None
+    target_id: Optional[int] = None
+    body: str = Field(..., min_length=1, max_length=4000)
+    quote: Optional[str] = Field(None, max_length=500)
+    parent_id: Optional[int] = None
+
+
+class ResolveBody(BaseModel):
+    resolved: bool = True
+
+
+class SuggestionBody(BaseModel):
+    text: str = Field(..., max_length=60000)
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+class PresenceBody(BaseModel):
+    where: str = Field("", max_length=80)
+
+
+@router.get("/sessions/{session_id}/collab")
+def collab_state(session_id: int, current_user: User = Depends(get_current_active_user),
+                 db: DBSession = Depends(get_db)):
+    """Who's in the session, whether proposals apply, and what's waiting for a decision."""
+    s = _session(db, session_id, current_user)
+    return {"members": cs.members(db, s), "collaborative": cs.is_collaborative(db, s), "me": current_user.id,
+            "proposals": [cs.proposal_out(db, p) for p in cs.pending_proposals(db, s.id)],
+            "suggestions": [cs.suggestion_out(db, x) for x in cs.pending_suggestions(db, s.id)],
+            "present": cs.present(db, s.id, current_user.id)}
+
+
+@router.post("/sessions/{session_id}/proposals", status_code=201)
+def create_proposal(session_id: int, body: ProposalBody, current_user: User = Depends(get_current_active_user),
+                    db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        p = cs.propose(db, s, current_user, body.kind, body.target_id,
+                       {"reason": body.reason} if body.reason else None, body.reason_text)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    return cs.proposal_out(db, p)
+
+
+@router.post("/sessions/{session_id}/proposals/{proposal_id}/decide")
+def decide_proposal(session_id: int, proposal_id: int, body: DecisionBody,
+                    current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        p = cs.decide(db, s, current_user, proposal_id, body.decision)
+    except (cs.CollabError, ts.TriageError) as e:
+        raise _collab_http(e) if isinstance(e, cs.CollabError) else HTTPException(400, str(e))
+    return cs.proposal_out(db, p)
+
+
+@router.get("/sessions/{session_id}/comments")
+def list_comments(session_id: int, target_type: Optional[str] = None, target_id: Optional[int] = None,
+                  current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    return cs.threads(db, s.id, target_type, target_id)
+
+
+@router.post("/sessions/{session_id}/comments", status_code=201)
+def add_comment(session_id: int, body: CommentBody, current_user: User = Depends(get_current_active_user),
+                db: DBSession = Depends(get_db)):
+    """Anyone with access can comment, viewers included (e.g. a supervisor)."""
+    s = _session(db, session_id, current_user)
+    try:
+        c = cs.add_comment(db, s, current_user, body.target_type or "", body.target_id or 0, body.body,
+                           body.quote, body.parent_id)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    return {"id": c.id}
+
+
+@router.post("/sessions/{session_id}/comments/{comment_id}/resolve")
+def resolve_comment(session_id: int, comment_id: int, body: ResolveBody,
+                    current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    try:
+        c = cs.resolve_comment(db, s, current_user, comment_id, body.resolved)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    return {"id": c.id, "resolved": c.resolved}
+
+
+@router.get("/sessions/{session_id}/suggestions")
+def list_suggestions(session_id: int, section_id: Optional[int] = None,
+                     current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    return [cs.suggestion_out(db, x) for x in cs.pending_suggestions(db, s.id, section_id)]
+
+
+@router.post("/sessions/{session_id}/writing/sections/{section_id}/suggestions", status_code=201)
+def suggest_edit(session_id: int, section_id: int, body: SuggestionBody,
+                 current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        x = cs.suggest_edit(db, s, current_user, _section(db, s, section_id), body.text, body.note)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    return cs.suggestion_out(db, x)
+
+
+@router.post("/sessions/{session_id}/suggestions/{suggestion_id}/decide")
+def decide_suggestion(session_id: int, suggestion_id: int, body: DecisionBody,
+                      current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        x = cs.decide_suggestion(db, s, current_user, suggestion_id, body.decision)
+    except cs.CollabError as e:
+        raise _collab_http(e)
+    return cs.suggestion_out(db, x)
+
+
+@router.get("/sessions/{session_id}/whats-new")
+def whats_new(session_id: int, current_user: User = Depends(get_current_active_user),
+              db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    return cs.whats_new(db, s, current_user)
+
+
+@router.post("/sessions/{session_id}/seen", status_code=204)
+def mark_seen(session_id: int, current_user: User = Depends(get_current_active_user),
+              db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    cs.mark_seen(db, s, current_user)
+    return Response(status_code=204)
+
+
+@router.get("/sessions/{session_id}/history")
+def history(session_id: int, target_type: str, target_id: int,
+            current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    return cs.history(db, s.id, target_type, target_id)
+
+
+@router.post("/sessions/{session_id}/presence")
+def presence(session_id: int, body: PresenceBody, current_user: User = Depends(get_current_active_user),
+             db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    cs.heartbeat(s.id, current_user.id, body.where)
+    return cs.present(db, s.id, current_user.id)

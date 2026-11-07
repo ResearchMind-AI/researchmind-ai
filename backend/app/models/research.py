@@ -99,5 +99,7 @@ class WritingSection(Base):
     user_text = Column(Text, nullable=True)
     feedback = Column(JSON, nullable=True)   # last "check my section" result
     updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # whoever started writing it
+    version = Column(Integer, nullable=False, default=0, server_default="0")  # bumps on every save
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

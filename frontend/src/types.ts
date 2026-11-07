@@ -18,6 +18,7 @@ export interface Paper {
   uploaded: boolean;
   status: "kept" | "removed"; is_key: boolean; notes: string | null; removed_reason: string | null;
   full_text: boolean; full_text_source: string | null; added_at: string | null;
+  added_by: number | null; status_by: number | null;
 }
 export interface Screening {
   screened: number | null; found: number; kept: number; removed: number; key: number;
@@ -45,7 +46,7 @@ export type GapStatus = "open" | "exploring" | "promising" | "dropped";
 export interface Gap {
   id: number; title: string; description: string | null; gap_type: string | null; research_question: string | null;
   confidence: string | null; evidence_paper_ids: number[]; source: "ai" | "user"; pinned: boolean;
-  status: GapStatus; notes: string | null; assessment: Assessment | null;
+  status: GapStatus; notes: string | null; assessment: Assessment | null; created_by?: number | null;
 }
 
 export interface Citation { n: number; paper_id: number; title: string; url: string | null; year: number | null }
@@ -65,7 +66,38 @@ export interface Feedback {
 export interface Section {
   id: number; position: number; heading: string; kind: string; guidance: Guidance | null;
   user_text: string | null; feedback: Feedback | null; words: number;
+  owner_id: number | null; version: number; updated_by: number | null; updated_at: string | null;
 }
+// ── Working together ────────────────────────────────────────────────────────
+export interface CollabMember { id: number; name: string; email: string; role: string; can_edit: boolean }
+export interface Proposal {
+  id: number; kind: "remove_paper" | "restore_paper" | "untrack_gap" | "delete_gap" | "delete_section";
+  target_id: number; payload: { reason?: string }; reason_text: string | null; status: string;
+  proposed_by: number; proposed_by_name: string; decided_by: number | null; decided_by_name: string | null; created_at: string;
+}
+export interface Suggestion {
+  id: number; section_id: number; base_text: string; new_text: string; note: string | null;
+  user_id: number; user_name: string; status: string; created_at: string;
+}
+export interface Presence { user_id: number; name: string; where: string }
+export interface CollabState {
+  members: CollabMember[]; collaborative: boolean; me: number;
+  proposals: Proposal[]; suggestions: Suggestion[]; present: Presence[];
+}
+export interface CommentItem { id: number; user_id: number; user_name: string; body: string; mentions: number[]; created_at: string }
+export interface CommentThread extends CommentItem {
+  target_type: string; target_id: number; quote: string | null; resolved: boolean; replies: CommentItem[];
+}
+export interface ActivityItem {
+  id: number; kind: string; summary: string; user_id: number | null; user_name: string | null;
+  target_type: string | null; target_id: number | null; data: Record<string, unknown> | null; at: string;
+}
+export interface NeedsYou {
+  type: "proposal" | "suggestion" | "mention"; id: number; user_name: string; text: string; at: string;
+  kind?: string; target_id?: number; target_type?: string; section_id?: number;
+}
+export interface WhatsNew { last_seen_at: string | null; needs_you: NeedsYou[]; changes: ActivityItem[]; unseen: number; count: number }
+
 export interface NoticeAction { label: string; to?: string; ask?: string; gap_id?: number }
 export interface Notice { id: string; text: string; actions: NoticeAction[] }
 /** What the research partner panel is about. */

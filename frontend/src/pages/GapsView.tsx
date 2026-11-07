@@ -6,6 +6,7 @@ import { api } from "../api";
 import type { Gap, GapStatus } from "../types";
 import { Empty, ErrorNote, Modal, PageLoading, RefBadges, Spinner, useToast } from "../components/ui";
 import { useSession } from "./SessionLayout";
+import { CommentsButton, HistoryButton, ProposalBanner, useComments, who } from "../components/collab";
 
 const STATUS: { value: GapStatus; label: string }[] = [
   { value: "open", label: "Open" }, { value: "exploring", label: "Exploring" },
@@ -93,7 +94,8 @@ function Notes({ g, sid, canEdit }: { g: Gap; sid: number; canEdit: boolean }) {
 }
 
 function GapDetail({ g }: { g: Gap }) {
-  const { sid, session, papers, paperMap, openPartner } = useSession();
+  const { sid, session, papers, paperMap, openPartner, collab } = useSession();
+  const comments = useComments(sid);
   const qc = useQueryClient();
   const toast = useToast();
   const navigate = useNavigate();
@@ -101,7 +103,10 @@ function GapDetail({ g }: { g: Gap }) {
   const refs = g.evidence_paper_ids.map((i) => nById.get(i)).filter((n): n is number => !!n);
   const update = useMutation({
     mutationFn: (patch: Partial<Pick<Gap, "pinned" | "status">>) => api.updateGap(sid, g.id, patch),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["gaps", sid] }); qc.invalidateQueries({ queryKey: ["writing", sid] }); },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["gaps", sid] }); qc.invalidateQueries({ queryKey: ["writing", sid] });
+      if ("proposal" in r) { qc.invalidateQueries({ queryKey: ["collab", sid] }); toast("Proposed. Someone else needs to approve it."); }
+    },
     onError: (e: Error) => toast(e.message, "error"),
   });
   const assess = useMutation({
@@ -110,10 +115,14 @@ function GapDetail({ g }: { g: Gap }) {
     onError: (e: Error) => toast(e.message, "error"),
   });
   async function remove() {
-    if (!window.confirm("Delete this gap and its discussion?")) return;
-    try { await api.deleteGap(sid, g.id); qc.invalidateQueries({ queryKey: ["gaps", sid] }); navigate(`/s/${sid}/explore/gaps`); }
-    catch (e) { toast((e as Error).message, "error"); }
+    if (!collab.collaborative && !window.confirm("Delete this gap and its discussion?")) return;
+    try {
+      const r = await api.deleteGap(sid, g.id);
+      if (r?.proposal) { qc.invalidateQueries({ queryKey: ["collab", sid] }); toast("Proposed. Someone else needs to approve deleting it."); return; }
+      qc.invalidateQueries({ queryKey: ["gaps", sid] }); navigate(`/s/${sid}/explore/gaps`);
+    } catch (e) { toast((e as Error).message, "error"); }
   }
+  const proposal = collab.proposalFor("untrack_gap", g.id) ?? collab.proposalFor("delete_gap", g.id);
   const a = g.assessment;
   const v = a ? VERDICT[a.novelty.verdict] ?? VERDICT.unknown : null;
   const rq = g.research_question || a?.evidence.research_question;
@@ -129,6 +138,12 @@ function GapDetail({ g }: { g: Gap }) {
             {g.confidence && <span className="chip">{g.confidence} confidence</span>}
           </div>
           <h2 className="h-serif text-[24px] leading-tight">{g.title}</h2>
+          {collab.collaborative && (
+            <div className="flex flex-wrap items-center gap-x-3 text-xs text-ink-muted">
+              {g.source === "user" && g.created_by && <span>Added by {who(collab, g.created_by)}</span>}
+              <HistoryButton sid={sid} target={{ type: "gap", id: g.id }} title={g.title} />
+            </div>
+          )}
         </div>
         {canEdit && (
           <div className="flex flex-wrap items-center gap-2">
@@ -144,10 +159,13 @@ function GapDetail({ g }: { g: Gap }) {
               })}>
               {g.pinned ? <><Check size={14} />Tracked</> : <><Pin size={14} />Track this gap</>}
             </button>
-            <button className="btn btn-sm btn-ghost" onClick={remove} aria-label="Delete gap" title="Delete gap"><Trash2 size={14} /></button>
+            {collab.collaborative && <CommentsButton sid={sid} collab={collab} threads={comments.data ?? []} target={{ type: "gap", id: g.id }} title={g.title} canComment />}
+            <button className="btn btn-sm btn-ghost" onClick={remove} aria-label={collab.collaborative ? "Propose deleting this gap" : "Delete gap"} title={collab.collaborative ? "Propose deleting" : "Delete gap"}><Trash2 size={14} /></button>
           </div>
         )}
+        {!canEdit && collab.collaborative && <CommentsButton sid={sid} collab={collab} threads={comments.data ?? []} target={{ type: "gap", id: g.id }} title={g.title} canComment />}
       </div>
+      {proposal && <ProposalBanner sid={sid} p={proposal} collab={collab} canEdit={canEdit} what={`this gap`} />}
 
       {g.description && <p className="text-[15px] text-ink-2">{g.description}{refs.length > 0 && <RefBadges refs={refs} papers={paperMap} />}</p>}
       {rq && (

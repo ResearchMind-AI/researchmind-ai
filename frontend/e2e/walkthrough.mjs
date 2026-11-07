@@ -108,8 +108,9 @@ await page.getByText("What to cover in this section").waitFor({ timeout: 60_000 
 const text = "Large language models have been evaluated for diagnosis support in several settings [1]. "
   + "Accuracy is generally reported as high on benchmark questions. Some studies find lower performance in real clinical notes [2]. "
   + "Few studies evaluate patient outcomes directly.";
+const saved = page.waitForResponse((r) => r.url().includes("/writing/sections/") && r.request().method() === "PUT" && r.ok());
 await page.locator("textarea[id^=text-]").fill(text);
-await page.getByText("Saved").first().waitFor({ timeout: 6_000 });
+await saved;
 await page.getByRole("button", { name: "Save and check" }).click();
 await page.getByText("Feedback on your draft").waitFor({ timeout: 30_000 });
 await shot("07-write");

@@ -8,6 +8,7 @@ from app.models.session import Session, SessionMember, SessionStatus, SessionMem
 from app.models.paper import Paper, SessionPaper, PaperSource
 from app.models.knowledge_map import KnowledgeNode, NodeRelationship, NodeType, RelationType
 from app.models.research import PaperChunk, SessionMessage, SessionArtifact, ApiCache, Gap, WritingSection
+from app.models.collab import Activity, Comment, Proposal, Suggestion, SessionVisit
 from app.core.database import Base
 
 __all__ = [
@@ -32,5 +33,10 @@ __all__ = [
     "ApiCache",
     "Gap",
     "WritingSection",
+    "Activity",
+    "Comment",
+    "Proposal",
+    "Suggestion",
+    "SessionVisit",
     "Base",
 ]

@@ -67,6 +67,8 @@ NEW_COLUMNS = [
     ("session_papers", "removed_reason", "VARCHAR(64)"),
     ("session_papers", "status_by_user_id", "INTEGER"),
     ("session_papers", "status_at", "TIMESTAMP WITH TIME ZONE"),
+    ("writing_sections", "owner_id", "INTEGER"),
+    ("writing_sections", "version", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

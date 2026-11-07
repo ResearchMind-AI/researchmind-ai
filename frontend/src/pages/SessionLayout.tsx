@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, CheckCircle2, Layers, MessageSquare, PenLine, RefreshCw, Share2, Trash2 } from "lucide-react";
+import { Bell, BookOpen, CheckCircle2, Layers, MessageSquare, PenLine, RefreshCw, Share2, Trash2 } from "lucide-react";
 import { api, analyseUrl, streamSSE, type AnalyseEvent } from "../api";
 import type { Discovery, Paper, PartnerContext, Screening, SessionInfo } from "../types";
 import type { HandedQuestion } from "../components/ChatThread";
 import PartnerPanel from "../components/PartnerPanel";
+import { Avatar, useCollab, WhatsNewPanel, type Collab } from "../components/collab";
 import { ErrorNote, PageLoading, Spinner, useToast } from "../components/ui";
 
 export interface SessionCtx {
@@ -20,6 +21,7 @@ export interface SessionCtx {
   openPartner: (ctx?: PartnerContext, question?: string) => void;
   /** What the current page is about (a gap, a section); the partner follows it while open. */
   setPageContext: (ctx: PartnerContext | null) => void;
+  collab: Collab;
 }
 export const useSession = () => useOutletContext<SessionCtx>();
 
@@ -72,6 +74,25 @@ export default function SessionLayout() {
   const running = !!lines && !error && lines[lines.length - 1] !== "__done__";
   const abort = useRef<AbortController | null>(null);
 
+  // Working together: who's here, what's new, what needs a decision
+  const collab = useCollab(sid);
+  const whatsNew = useQuery({ queryKey: ["whatsnew", sid], queryFn: () => api.whatsNew(sid), refetchInterval: 60_000 });
+  const [newsOpen, setNewsOpen] = useState(false);
+  const [present, setPresent] = useState<{ user_id: number; name: string; where: string }[]>([]);
+  const where = /\/explore\/gaps/.test(location.pathname) ? "Explore · Gaps" : /\/explore/.test(location.pathname) ? "Explore · Themes"
+    : /\/write/.test(location.pathname) ? "Write" : /\/share/.test(location.pathname) ? "Share" : "Papers";
+  useEffect(() => {
+    let alive = true;
+    const beat = () => api.presence(sid, where).then((p) => { if (alive) setPresent(p); }).catch(() => {});
+    beat();
+    const t = setInterval(beat, 30_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [sid, where]);
+  function closeNews() {
+    setNewsOpen(false);
+    api.seen(sid).then(() => qc.invalidateQueries({ queryKey: ["whatsnew", sid] })).catch(() => {});
+  }
+
   // Research partner panel
   const [partnerOpen, setPartnerOpen] = useState(() => { try { return localStorage.getItem("rm.partner") === "1"; } catch { return false; } });
   const [pageCtx, setPageCtx] = useState<PartnerContext | null>(null);
@@ -83,7 +104,7 @@ export default function SessionLayout() {
     try { localStorage.setItem("rm.partner", v ? "1" : "0"); } catch { /* private mode */ }
   }, []);
   const openPartner = useCallback((ctx?: PartnerContext, question?: string) => {
-    setExplicitCtx(ctx ?? null); setCleared(false); setOpen(true);
+    setExplicitCtx(ctx ?? null); setCleared(false); setOpen(true); setNewsOpen(false);
     if (question) setHanded({ q: question, nonce: Date.now() });
   }, [setOpen]);
   const setPageContext = useCallback((ctx: PartnerContext | null) => {
@@ -93,9 +114,9 @@ export default function SessionLayout() {
   const partnerCtx: PartnerContext = cleared ? { kind: "session" } : explicitCtx ?? pageCtx ?? { kind: "session" };
   // Leave room for the docked panel on wide screens.
   useEffect(() => {
-    document.documentElement.style.setProperty("--rm-partner", partnerOpen ? "432px" : "0px");
+    document.documentElement.style.setProperty("--rm-partner", partnerOpen || newsOpen ? "432px" : "0px");
     return () => { document.documentElement.style.setProperty("--rm-partner", "0px"); };
-  }, [partnerOpen]);
+  }, [partnerOpen, newsOpen]);
 
   const runAnalysis = useCallback(() => {
     if (running) return;
@@ -149,12 +170,23 @@ export default function SessionLayout() {
 
   const tracked = (gaps.data ?? []).filter((g) => (g.pinned || g.source === "user") && g.status !== "dropped").length;
   const words = s.words ?? 0;
+  // Decisions waiting for me (not my own proposals; suggestions on sections I own)
+  const theirs = collab.proposals.filter((p) => p.proposed_by !== collab.me);
+  const myWriting = new Set((qc.getQueryData<{ sections: { id: number; owner_id: number | null }[] }>(["writing", sid])?.sections ?? [])
+    .filter((x) => x.owner_id === collab.me).map((x) => x.id));
+  const review = {
+    papers: theirs.filter((p) => p.kind.endsWith("_paper")).length,
+    explore: theirs.filter((p) => p.kind.endsWith("_gap")).length,
+    write: theirs.filter((p) => p.kind === "delete_section").length + collab.suggestions.filter((x) => myWriting.has(x.section_id)).length,
+  };
   const tabs = [
-    { to: "papers", label: "Papers", icon: BookOpen, count: `${papers.data ? kept.length : s.paper_count} kept` },
-    { to: "explore", label: "Explore", icon: Layers, count: `${s.theme_count} themes · ${tracked} gap${tracked === 1 ? "" : "s"} tracked` },
-    { to: "write", label: "Write", icon: PenLine, count: `${words} words` },
+    { to: "papers", label: "Papers", icon: BookOpen, count: `${papers.data ? kept.length : s.paper_count} kept`, review: review.papers },
+    { to: "explore", label: "Explore", icon: Layers, count: `${s.theme_count} themes · ${tracked} gap${tracked === 1 ? "" : "s"} tracked`, review: review.explore },
+    { to: "write", label: "Write", icon: PenLine, count: `${words} words`, review: review.write },
   ];
-  const ctx: SessionCtx = { sid, session: s, papers: papers.data ?? [], kept, paperMap, running, runAnalysis, openPartner, setPageContext };
+  const ctx: SessionCtx = { sid, session: s, papers: papers.data ?? [], kept, paperMap, running, runAnalysis, openPartner, setPageContext, collab };
+  const others = collab.members.filter((m) => m.id !== collab.me);
+  const news = whatsNew.data?.count ?? 0;
 
   return (
     <div className="flex flex-col gap-5">
@@ -167,10 +199,24 @@ export default function SessionLayout() {
             {s.discovery?.domain && <span className="chip">{s.discovery.domain}</span>}
             {s.role !== "owner" && <span className="chip chip-blue">You are a {s.role}</span>}
           </div>
+          {others.length > 0 && (
+            <div className="flex items-center gap-2 text-[13px] text-ink-muted">
+              <span className="flex">{collab.members.map((m, i) => <span key={m.id} className={i ? "-ml-2" : ""}><Avatar person={m} size={26} ring /></span>)}</span>
+              {present.length
+                ? <span><b className="text-ink">{present.map((p) => p.name.split(" ")[0]).join(", ")}</b> {present.length > 1 ? "are" : "is"} here · {present.map((p) => p.where).join(", ")}</span>
+                : <span>Working with {others.map((m) => m.name.split(" ")[0]).join(", ")}</span>}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {s.can_manage && <NavLink to="share" className="btn no-underline"><Share2 size={16} aria-hidden="true" />Share</NavLink>}
-          <button className={`btn ${partnerOpen ? "border-teal text-teal-ink" : ""}`} aria-pressed={partnerOpen} onClick={() => setOpen(!partnerOpen)}>
+          {others.length > 0 && (
+            <button className={`btn ${newsOpen ? "border-teal text-teal-ink" : ""}`} aria-pressed={newsOpen}
+              onClick={() => { if (newsOpen) closeNews(); else { setNewsOpen(true); setOpen(false); whatsNew.refetch(); } }}>
+              <Bell size={16} aria-hidden="true" />What's new{news > 0 && <span className="rounded-full bg-[#C2410C] px-[7px] text-xs font-bold text-white">{news}</span>}
+            </button>
+          )}
+          <button className={`btn ${partnerOpen ? "border-teal text-teal-ink" : ""}`} aria-pressed={partnerOpen} onClick={() => { setOpen(!partnerOpen); if (!partnerOpen) setNewsOpen(false); }}>
             <MessageSquare size={16} aria-hidden="true" />Research partner
           </button>
           {s.can_edit && (
@@ -188,14 +234,20 @@ export default function SessionLayout() {
         {tabs.map((t) => (
           <NavLink key={t.to} to={t.to}
             className={({ isActive }) => `flex h-[38px] items-center gap-2 rounded-lg px-3.5 font-semibold no-underline ${isActive ? "bg-navy text-white" : "text-ink-2 hover:bg-ground hover:text-ink"}`}>
-            {({ isActive }) => <><t.icon size={16} aria-hidden="true" />{t.label}<span className={`rounded-full px-[7px] text-xs font-semibold ${isActive ? "bg-navy-3 text-white" : "bg-chip text-ink-muted"}`}>{t.count}</span></>}
+            {({ isActive }) => <><t.icon size={16} aria-hidden="true" />{t.label}<span className={`rounded-full px-[7px] text-xs font-semibold ${isActive ? "bg-navy-3 text-white" : "bg-chip text-ink-muted"}`}>{t.count}</span>
+              {t.review > 0 && <span className="rounded-full bg-[#C2410C] px-[7px] text-xs font-bold text-white">{t.review} to review</span>}</>}
           </NavLink>
         ))}
       </nav>
 
       <Outlet context={ctx} />
 
-      {partnerOpen && (
+      {newsOpen && (
+        <div className="fixed inset-0 z-30 border-l border-line shadow-2xl sm:left-auto sm:w-[420px]">
+          <WhatsNewPanel sid={sid} collab={collab} data={whatsNew.data} onClose={closeNews} />
+        </div>
+      )}
+      {partnerOpen && !newsOpen && (
         <div className="fixed inset-0 z-30 border-l border-line shadow-2xl sm:left-auto sm:w-[420px]">
           <PartnerPanel sid={sid} ctx={partnerCtx} handed={handed} paperMap={paperMap} canAsk={s.can_edit}
             onClearContext={() => setCleared(true)} onClose={() => setOpen(false)} onAsk={(c, q) => openPartner(c, q)} />

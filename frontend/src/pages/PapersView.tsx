@@ -3,7 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { BookOpen, ChevronDown, ChevronUp, ExternalLink, FileText, Pencil, Search, Star, Upload, X } from "lucide-react";
 import { api } from "../api";
-import { REMOVE_REASONS, type Paper } from "../types";
+import { REMOVE_REASONS, type CommentThread, type Paper } from "../types";
+import { CommentsButton, HistoryButton, ProposalBanner, useComments, who, type Collab } from "../components/collab";
 import { Empty, Modal, Spinner, useToast } from "../components/ui";
 import { useSession } from "./SessionLayout";
 
@@ -27,17 +28,19 @@ function NoteEditor({ p, onSave, onClose }: { p: Paper; onSave: (v: string) => v
   );
 }
 
-function PaperCard({ p, canEdit, onUpdate, onUpload }: {
-  p: Paper; canEdit: boolean;
+function PaperCard({ p, sid, canEdit, onUpdate, onUpload, collab, threads }: {
+  p: Paper; sid: number; canEdit: boolean;
   onUpdate: (p: Paper, patch: Partial<Paper>) => void;
   onUpload: (p: Paper) => void;
+  collab: Collab; threads: CommentThread[];
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const authors = p.authors.length > 4 ? `${p.authors.slice(0, 4).join(", ")} et al.` : p.authors.join(", ");
   const removed = p.status === "removed";
+  const proposal = collab.proposalFor(removed ? "restore_paper" : "remove_paper", p.id);
   return (
-    <article className={`flex flex-wrap gap-4 border-b border-line px-5 py-[18px] last:border-b-0 md:flex-nowrap ${p.is_key ? "bg-[#FFFCF7]" : ""} ${removed ? "bg-ground/60" : ""}`}>
+    <article {...(proposal ? { "data-proposal": "" } : {})} className={`flex flex-wrap gap-4 border-b border-line px-5 py-[18px] last:border-b-0 md:flex-nowrap ${proposal ? "border-l-4 border-l-[#C2410C] bg-[#FFF7F1]" : p.is_key ? "bg-[#FFFCF7]" : ""} ${removed && !proposal ? "bg-ground/60" : ""}`}>
       <div className={`flex h-[34px] w-[34px] flex-none items-center justify-center rounded-[9px] text-[13px] font-bold ${removed ? "bg-chip text-ink-muted" : "bg-teal-soft text-teal-ink"}`} aria-label={`Paper ${p.n}`}>{p.n}</div>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <h3 className={`h-serif text-[17px] leading-snug ${removed ? "text-ink-muted" : ""}`}>
@@ -54,6 +57,14 @@ function PaperCard({ p, canEdit, onUpdate, onUpload }: {
           {p.found_in.filter((s) => s !== "upload").map((s) => <span key={s} className="chip">{SOURCE_LABEL[s] ?? s}</span>)}
           {p.uploaded && <span className="chip chip-amber">Your upload</span>}
         </div>
+        {collab.collaborative && (p.added_by || p.status_by) && (
+          <div className="flex flex-wrap items-center gap-x-3 text-xs text-ink-muted">
+            {p.found_in.some((x) => x === "upload" || x === "doi") && p.added_by && <span>Added by {who(collab, p.added_by)}</span>}
+            {removed && p.status_by && <span>Removed by {who(collab, p.status_by)}</span>}
+            <HistoryButton sid={sid} target={{ type: "paper", id: p.id }} title={`Paper ${p.n}`} />
+          </div>
+        )}
+        {proposal && <ProposalBanner sid={sid} p={proposal} collab={collab} canEdit={canEdit} what={`paper ${p.n}`} />}
         {editing ? <NoteEditor p={p} onClose={() => setEditing(false)} onSave={(v) => { onUpdate(p, { notes: v }); setEditing(false); }} />
           : p.notes ? (
             <div className="flex items-baseline gap-1.5 text-[13px] text-ink-2">
@@ -70,20 +81,47 @@ function PaperCard({ p, canEdit, onUpdate, onUpload }: {
           </div>
         )}
       </div>
-      {canEdit && (
+      {(canEdit || collab.collaborative) && (
         <div className="flex flex-none gap-1.5 self-start">
-          {removed
-            ? <button className="btn btn-sm" onClick={() => onUpdate(p, { status: "kept" })}>Restore</button>
+          {collab.collaborative && <CommentsButton sid={sid} collab={collab} threads={threads} target={{ type: "paper", id: p.id }} title={`Paper ${p.n}`} canComment />}
+          {!canEdit ? null : proposal ? null : removed
+            ? <button className="btn btn-sm" onClick={() => onUpdate(p, { status: "kept" })}>{collab.collaborative ? "Propose restoring" : "Restore"}</button>
             : <>
                 <button className={`btn btn-sm ${p.is_key ? "border-[#F3D3A6] bg-amber-soft text-amber-ink" : ""}`} aria-pressed={p.is_key}
                   onClick={() => onUpdate(p, { is_key: !p.is_key })}>
                   <Star size={15} fill={p.is_key ? "currentColor" : "none"} aria-hidden="true" />Key paper
                 </button>
-                <button className="btn btn-sm" onClick={() => onUpdate(p, { status: "removed" })}>Remove</button>
+                <button className="btn btn-sm" onClick={() => onUpdate(p, { status: "removed" })}>{collab.collaborative ? "Propose removal" : "Remove"}</button>
               </>}
         </div>
       )}
     </article>
+  );
+}
+
+function ProposeRemovalModal({ p, others, onClose, onSubmit }: {
+  p: Paper; others: string; onClose: () => void; onSubmit: (reason: string, text: string) => Promise<void>;
+}) {
+  const [reason, setReason] = useState("off_topic");
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal title={`Propose removing paper ${p.n}`} onClose={onClose}>
+      <form className="flex flex-col gap-4" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await onSubmit(reason, text); onClose(); } finally { setBusy(false); } }}>
+        <p className="text-sm text-ink-muted">{others} will see your proposal and approve it or keep the paper. Until then it's still used everywhere.</p>
+        <fieldset className="flex flex-wrap gap-1.5"><legend className="label">Why?</legend>
+          {REMOVE_REASONS.map((r) => (
+            <label key={r.value} className={`btn btn-sm cursor-pointer ${reason === r.value ? "border-teal bg-teal-soft text-teal-ink" : ""}`}>
+              <input type="radio" name="reason" className="sr-only" value={r.value} checked={reason === r.value} onChange={() => setReason(r.value)} />{r.label}
+            </label>
+          ))}
+        </fieldset>
+        <div><label className="label" htmlFor="prop-text">Add a note <span className="font-normal text-ink-muted">(optional)</span></label>
+          <input id="prop-text" className="input" value={text} onChange={(e) => setText(e.target.value)} maxLength={300} placeholder="e.g. It's about dispensing, not clinical decisions." /></div>
+        <div className="flex justify-end gap-2"><button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy}>{busy && <Spinner />}Propose removal</button></div>
+      </form>
+    </Modal>
   );
 }
 
@@ -109,7 +147,8 @@ function DoiModal({ onClose, onAdd }: { onClose: () => void; onAdd: (doi: string
 }
 
 export default function PapersView() {
-  const { sid, session, papers, kept, running, runAnalysis } = useSession();
+  const { sid, session, papers, kept, running, runAnalysis, collab } = useSession();
+  const comments = useComments(sid);
   const qc = useQueryClient();
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -148,13 +187,25 @@ export default function PapersView() {
     qc.invalidateQueries({ queryKey: ["sessions"] });
   }
 
+  const [proposing, setProposing] = useState<Paper | null>(null);
+  const othersNames = collab.members.filter((m) => m.id !== collab.me && m.can_edit).map((m) => m.name.split(" ")[0]).join(" or ") || "Your collaborator";
   async function update(p: Paper, patch: Partial<Paper>) {
+    if (collab.collaborative && patch.status === "removed" && !patch.removed_reason) { setProposing(p); return; }
     const prev = qc.getQueryData<Paper[]>(["papers", sid]);
     qc.setQueryData<Paper[]>(["papers", sid], (xs) => xs?.map((x) => (x.id === p.id
       ? { ...x, ...patch, ...(patch.status === "removed" ? { is_key: false } : {}), ...(patch.status === "kept" ? { removed_reason: null } : {}) }
       : x)));
     try {
-      const fresh = await api.updatePaper(sid, p.id, patch);
+      const res = await api.updatePaper(sid, p.id, patch);
+      if ("proposal" in res) {
+        // Working together: big changes wait for someone else's approval.
+        qc.setQueryData<Paper[]>(["papers", sid], (xs) => xs?.map((x) => (x.id === p.id ? res.paper : x)));
+        qc.invalidateQueries({ queryKey: ["collab", sid] });
+        const others = collab.members.filter((m) => m.id !== collab.me && m.can_edit).map((m) => m.name.split(" ")[0]);
+        toast(`Proposed. ${others.join(" or ") || "Someone else"} needs to approve it.`);
+        return;
+      }
+      const fresh = res;
       qc.setQueryData<Paper[]>(["papers", sid], (xs) => xs?.map((x) => (x.id === p.id ? fresh : x)));
       if (patch.status === "removed") setJustRemoved(fresh);
       if (patch.status === "kept" && justRemoved?.id === p.id) setJustRemoved(null);
@@ -244,6 +295,16 @@ export default function PapersView() {
         </div>
       </section>
 
+      {(() => {
+        const waiting = collab.proposals.filter((x) => x.kind.endsWith("_paper") && x.proposed_by !== collab.me);
+        return waiting.length > 0 && canEdit ? (
+          <section className="card flex flex-wrap items-center gap-3 border-[#F5C9A8] bg-[#FFF7F1] px-5 py-4">
+            <div className="min-w-[260px] flex-1"><div className="font-bold">{waiting.length} proposal{waiting.length > 1 ? "s need" : " needs"} your decision</div>
+              <div className="text-[13px] text-ink-muted">Nothing changes until one of you approves. Proposed papers are still used everywhere meanwhile.</div></div>
+            <button className="btn btn-sm" onClick={() => { setView(waiting.some((x) => x.kind === "restore_paper") && !waiting.some((x) => x.kind === "remove_paper") ? "removed" : "kept"); setQ(""); setSort("number"); document.querySelector("[data-proposal]")?.scrollIntoView({ behavior: "smooth", block: "center" }); }}>Review</button>
+          </section>
+        ) : null;
+      })()}
       <section className="card" aria-label="Papers">
         <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3.5">
           <div className="flex gap-1 rounded-[10px] bg-chip p-1" role="tablist" aria-label="Show papers">
@@ -271,7 +332,8 @@ export default function PapersView() {
             {view === "key" ? "No key papers yet. Use ☆ Key paper on the ones you'll lean on most." : view === "removed" ? "Nothing removed. Removed papers show here and can be restored any time." : "No papers match."}
           </div>
         )}
-        {shown.map((p) => <PaperCard key={p.id} p={p} canEdit={canEdit} onUpdate={update} onUpload={(x) => pickFiles(x)} />)}
+        {shown.map((p) => <PaperCard key={p.id} p={p} sid={sid} canEdit={canEdit} onUpdate={update} onUpload={(x) => pickFiles(x)}
+          collab={collab} threads={comments.data ?? []} />)}
       </section>
 
       {canEdit && (
@@ -309,6 +371,14 @@ export default function PapersView() {
         </div>
       )}
       {doiOpen && <DoiModal onClose={() => setDoiOpen(false)} onAdd={addDoi} />}
+      {proposing && <ProposeRemovalModal p={proposing} others={othersNames} onClose={() => setProposing(null)}
+        onSubmit={async (reason, text) => {
+          try {
+            await api.propose(sid, { kind: "remove_paper", target_id: proposing.id, reason, reason_text: text || undefined });
+            qc.invalidateQueries({ queryKey: ["collab", sid] });
+            toast(`Proposed. ${othersNames} needs to approve it.`);
+          } catch (e) { toast((e as Error).message, "error"); throw e; }
+        }} />}
     </div>
   );
 }
