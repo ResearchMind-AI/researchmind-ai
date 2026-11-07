@@ -48,6 +48,8 @@ class DiscoverRequest(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=2)
     gap_id: Optional[int] = Field(None, description="Ask within a gap's own thread")
+    theme: Optional[int] = Field(None, ge=0, description="Focus on this theme (index in the theme list)")
+    section_id: Optional[int] = Field(None, description="Focus on this writing section")
 
 
 class GapCreate(BaseModel):
@@ -60,6 +62,7 @@ class GapUpdate(BaseModel):
     pinned: Optional[bool] = None
     status: Optional[str] = None
     notes: Optional[str] = None
+    research_question: Optional[str] = Field(None, max_length=1000)
 
 
 class SectionUpdate(BaseModel):
@@ -259,7 +262,7 @@ def update_gap(session_id: int, gap_id: int, req: GapUpdate,
     s = _session(db, session_id, current_user, edit=True)
     try:
         return _gap_out(gs.update_gap(db, _gap(db, s, gap_id), pinned=req.pinned, status=req.status,
-                                      notes=req.notes))
+                                      notes=req.notes, research_question=req.research_question))
     except gs.GapError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
@@ -382,6 +385,7 @@ def _session_out(db: DBSession, s: Session, user: User) -> dict:
                                                          SessionPaper.status == "kept").count(),
             "theme_count": len(analysis.get("themes") or []),
             "gap_count": db.query(Gap).filter(Gap.session_id == s.id).count(),
+            "words": sum(ws.word_count(x.user_text) for x in ws.list_sections(db, s.id)),
             "created_at": s.created_at, "updated_at": s.updated_at}
 
 
@@ -586,6 +590,31 @@ async def analyse_stream(session_id: int, req: DiscoverRequest,
     return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
+def _focus(db: DBSession, s: Session, req: ChatRequest) -> Optional[dict]:
+    """What the research partner panel is 'about': a theme or a writing section."""
+    from app.models.research import WritingSection
+    if req.theme is not None:
+        themes = (get_artifact(db, s.id, "analysis") or {}).get("themes") or []
+        if req.theme >= len(themes):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Theme not found")
+        t = themes[req.theme]
+        return {"kind": "theme", "label": t["label"], "paper_ids": t.get("paper_ids") or []}
+    if req.section_id is not None:
+        sec = db.get(WritingSection, req.section_id)
+        if not sec or sec.session_id != s.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found")
+        return {"kind": "section", "heading": sec.heading, "text": sec.user_text or ""}
+    return None
+
+
+@router.get("/sessions/{session_id}/partner/notices")
+def partner_notices(session_id: int, current_user: User = Depends(get_current_active_user),
+                    db: DBSession = Depends(get_db)):
+    from app.services.partner_service import notices
+    s = _session(db, session_id, current_user)
+    return notices(db, s.id)
+
+
 @router.post("/sessions/{session_id}/chat/stream")
 async def chat_stream(session_id: int, req: ChatRequest, current_user: User = Depends(get_current_active_user),
                       db: DBSession = Depends(get_db)):
@@ -594,13 +623,14 @@ async def chat_stream(session_id: int, req: ChatRequest, current_user: User = De
     s = _session(db, session_id, current_user, edit=True)
     if req.gap_id:
         _gap(db, s, req.gap_id)
+    focus = _focus(db, s, req)
     sid, uid, gap_id, question = s.id, current_user.id, req.gap_id, req.question
 
     async def events():
         cdb = SessionLocal()
         try:
             gap = gs.get_gap(cdb, gap_id) if gap_id else None
-            ctx = await build_context(cdb, sid, question, gap=gap)
+            ctx = await build_context(cdb, sid, question, gap=gap, focus=focus)
             parts = []
             async for piece in stream_answer(ctx):
                 parts.append(piece)

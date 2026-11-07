@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, RefreshCw, Share2, Trash2 } from "lucide-react";
+import { BookOpen, CheckCircle2, Layers, MessageSquare, PenLine, RefreshCw, Share2, Trash2 } from "lucide-react";
 import { api, analyseUrl, streamSSE, type AnalyseEvent } from "../api";
-import type { Discovery, Paper, Screening, SessionInfo } from "../types";
+import type { Discovery, Paper, PartnerContext, Screening, SessionInfo } from "../types";
+import type { HandedQuestion } from "../components/ChatThread";
+import PartnerPanel from "../components/PartnerPanel";
 import { ErrorNote, PageLoading, Spinner, useToast } from "../components/ui";
 
 export interface SessionCtx {
@@ -14,6 +16,10 @@ export interface SessionCtx {
   paperMap: Map<number, Paper>;
   running: boolean;
   runAnalysis: () => void;
+  /** Open the research partner, optionally about something specific and with a question to ask. */
+  openPartner: (ctx?: PartnerContext, question?: string) => void;
+  /** What the current page is about (a gap, a section); the partner follows it while open. */
+  setPageContext: (ctx: PartnerContext | null) => void;
 }
 export const useSession = () => useOutletContext<SessionCtx>();
 
@@ -66,6 +72,31 @@ export default function SessionLayout() {
   const running = !!lines && !error && lines[lines.length - 1] !== "__done__";
   const abort = useRef<AbortController | null>(null);
 
+  // Research partner panel
+  const [partnerOpen, setPartnerOpen] = useState(() => { try { return localStorage.getItem("rm.partner") === "1"; } catch { return false; } });
+  const [pageCtx, setPageCtx] = useState<PartnerContext | null>(null);
+  const [explicitCtx, setExplicitCtx] = useState<PartnerContext | null>(null);
+  const [cleared, setCleared] = useState(false);
+  const [handed, setHanded] = useState<HandedQuestion | null>(null);
+  const setOpen = useCallback((v: boolean) => {
+    setPartnerOpen(v);
+    try { localStorage.setItem("rm.partner", v ? "1" : "0"); } catch { /* private mode */ }
+  }, []);
+  const openPartner = useCallback((ctx?: PartnerContext, question?: string) => {
+    setExplicitCtx(ctx ?? null); setCleared(false); setOpen(true);
+    if (question) setHanded({ q: question, nonce: Date.now() });
+  }, [setOpen]);
+  const setPageContext = useCallback((ctx: PartnerContext | null) => {
+    setPageCtx((prev) => (JSON.stringify(prev) === JSON.stringify(ctx) ? prev : ctx));
+    setExplicitCtx(null); setCleared(false);
+  }, []);
+  const partnerCtx: PartnerContext = cleared ? { kind: "session" } : explicitCtx ?? pageCtx ?? { kind: "session" };
+  // Leave room for the docked panel on wide screens.
+  useEffect(() => {
+    document.documentElement.style.setProperty("--rm-partner", partnerOpen ? "432px" : "0px");
+    return () => { document.documentElement.style.setProperty("--rm-partner", "0px"); };
+  }, [partnerOpen]);
+
   const runAnalysis = useCallback(() => {
     if (running) return;
     setLines([]);
@@ -116,16 +147,14 @@ export default function SessionLayout() {
     } catch (e) { toast((e as Error).message, "error"); }
   }
 
-  const pinned = (gaps.data ?? []).filter((g) => g.pinned).length;
+  const tracked = (gaps.data ?? []).filter((g) => (g.pinned || g.source === "user") && g.status !== "dropped").length;
+  const words = s.words ?? 0;
   const tabs = [
-    { to: "papers", label: "Papers", count: papers.data ? kept.length : s.paper_count },
-    { to: "themes", label: "Themes", count: s.theme_count },
-    { to: "gaps", label: "Gaps", count: gaps.data?.length ?? s.gap_count },
-    { to: "chat", label: "Ask" },
-    { to: "write", label: "Write" },
-    ...(s.can_manage ? [{ to: "share", label: "Share" }] : []),
+    { to: "papers", label: "Papers", icon: BookOpen, count: `${papers.data ? kept.length : s.paper_count} kept` },
+    { to: "explore", label: "Explore", icon: Layers, count: `${s.theme_count} themes · ${tracked} gap${tracked === 1 ? "" : "s"} tracked` },
+    { to: "write", label: "Write", icon: PenLine, count: `${words} words` },
   ];
-  const ctx: SessionCtx = { sid, session: s, papers: papers.data ?? [], kept, paperMap, running, runAnalysis };
+  const ctx: SessionCtx = { sid, session: s, papers: papers.data ?? [], kept, paperMap, running, runAnalysis, openPartner, setPageContext };
 
   return (
     <div className="flex flex-col gap-5">
@@ -135,14 +164,15 @@ export default function SessionLayout() {
           <h1 className="h-serif text-[28px] leading-tight md:text-[32px]">{s.title}</h1>
           {s.topic && s.topic !== s.title && <p className="text-ink-muted">{s.topic}</p>}
           <div className="flex flex-wrap gap-1.5">
-            <span className="chip">{papers.data ? kept.length : s.paper_count} papers</span>
             {s.discovery?.domain && <span className="chip">{s.discovery.domain}</span>}
-            {pinned > 0 && <span className="chip chip-amber">{pinned} pinned gap{pinned === 1 ? "" : "s"}</span>}
             {s.role !== "owner" && <span className="chip chip-blue">You are a {s.role}</span>}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {s.can_manage && <NavLink to="share" className="btn no-underline"><Share2 size={16} aria-hidden="true" />Share</NavLink>}
+          <button className={`btn ${partnerOpen ? "border-teal text-teal-ink" : ""}`} aria-pressed={partnerOpen} onClick={() => setOpen(!partnerOpen)}>
+            <MessageSquare size={16} aria-hidden="true" />Research partner
+          </button>
           {s.can_edit && (
             <button className="btn btn-primary" onClick={runAnalysis} disabled={running}>
               {running ? <Spinner /> : <RefreshCw size={16} aria-hidden="true" />}{s.paper_count ? "Find more papers" : "Find papers"}
@@ -154,16 +184,23 @@ export default function SessionLayout() {
 
       {lines && <Progress lines={lines} error={error} onClose={() => { setLines(null); setError(null); }} />}
 
-      <nav className="flex flex-wrap gap-1.5 border-b border-line pb-3" aria-label="Session sections">
+      <nav className="flex flex-wrap gap-1 rounded-xl border border-line bg-white p-[5px]" aria-label="Session views">
         {tabs.map((t) => (
           <NavLink key={t.to} to={t.to}
-            className={({ isActive }) => `flex h-9 items-center gap-2 rounded-full px-4 text-sm font-semibold no-underline ${isActive ? "bg-navy text-white" : "text-ink-2 hover:bg-chip"}`}>
-            {({ isActive }) => <>{t.label}{t.count !== undefined && <span className={`rounded-full px-1.5 text-xs ${isActive ? "bg-white/15" : "bg-chip text-ink-muted"}`}>{t.count}</span>}</>}
+            className={({ isActive }) => `flex h-[38px] items-center gap-2 rounded-lg px-3.5 font-semibold no-underline ${isActive ? "bg-navy text-white" : "text-ink-2 hover:bg-ground hover:text-ink"}`}>
+            {({ isActive }) => <><t.icon size={16} aria-hidden="true" />{t.label}<span className={`rounded-full px-[7px] text-xs font-semibold ${isActive ? "bg-navy-3 text-white" : "bg-chip text-ink-muted"}`}>{t.count}</span></>}
           </NavLink>
         ))}
       </nav>
 
       <Outlet context={ctx} />
+
+      {partnerOpen && (
+        <div className="fixed inset-0 z-30 border-l border-line shadow-2xl sm:left-auto sm:w-[420px]">
+          <PartnerPanel sid={sid} ctx={partnerCtx} handed={handed} paperMap={paperMap} canAsk={s.can_edit}
+            onClearContext={() => setCleared(true)} onClose={() => setOpen(false)} onAsk={(c, q) => openPartner(c, q)} />
+        </div>
+      )}
     </div>
   );
 }

@@ -36,7 +36,6 @@ await page.getByText("Analysis complete").waitFor({ timeout: 60_000 });
 await page.waitForTimeout(500);
 await shot("03-papers");
 step("triage: remove with reason, undo-able, key paper, note, restore");
-await page.getByRole("button", { name: "Got it" }).click();
 await page.getByRole("button", { name: "Remove" }).first().click();
 await page.getByText(/Paper 1 removed/).waitFor();
 await page.getByRole("button", { name: "Off-topic" }).click();
@@ -65,8 +64,9 @@ await page.getByText(/Added as paper/).waitFor();
 await shot("03c-triage");
 
 step("themes");
-await page.getByRole("link", { name: /^Themes/ }).click();
+await page.getByRole("link", { name: /^Explore/ }).click();
 await page.locator("article").first().waitFor();
+await page.getByText(/group your kept papers/).waitFor();
 await shot("04-themes");
 
 step("gaps: add own gap with check");
@@ -77,23 +77,32 @@ await page.getByRole("button", { name: "Add gap" }).click();
 await page.getByText(/Novelty check/).waitFor({ timeout: 30_000 });
 await page.getByLabel("Your notes").fill("Talk to the regional health board.");
 await page.getByText("Saved").first().waitFor({ timeout: 5_000 });
-await page.getByRole("button", { name: "How could I design a study to address this?" }).click();
-await page.getByText(/Sources \(/).first().waitFor({ timeout: 30_000 });
+step("research partner about the gap: notice, answer, add to notes");
+await page.getByRole("button", { name: "Discuss with your research partner" }).click();
+const partner = page.getByRole("complementary", { name: "Research partner" });
+await partner.getByText("Your gap: No evaluation of LLM triage tools").waitFor();
+await partner.getByRole("button", { name: "How could I design a study to address this?" }).click();
+await partner.getByText(/Sources \(/).first().waitFor({ timeout: 30_000 });
+await partner.getByRole("button", { name: "Add to my gap notes" }).first().click();
+await page.getByText("Added to your gap notes").waitFor();
 await shot("05-gap-detail");
-// pin an AI gap
+// track an AI gap: it gets checked automatically
 await page.locator("aside[aria-label=Gaps] a").last().click();
-await page.getByRole("button", { name: "Pin" }).click();
-await page.getByRole("button", { name: "Unpin" }).waitFor();
+await page.getByRole("button", { name: "Track this gap" }).click();
+await page.getByRole("button", { name: "Tracked" }).waitFor();
+await page.getByText(/Novelty check:/).waitFor({ timeout: 30_000 });
 
-step("ask");
-await page.getByRole("link", { name: "Ask" }).click();
-await page.getByLabel("Your question").fill("What are the main findings?");
+step("research partner about the whole session");
+await partner.getByRole("button", { name: "Ask about the whole session instead" }).click();
+await partner.getByText("The whole session").waitFor();
+await partner.getByLabel("Your question").fill("What are the main findings?");
 await page.keyboard.press("Enter");
-await page.getByText(/Sources \(/).first().waitFor({ timeout: 30_000 });
+await partner.getByText(/Sources \(/).first().waitFor({ timeout: 30_000 });
 await shot("06-ask");
+await partner.getByRole("button", { name: "Close research partner" }).click();
 
 step("write");
-await page.getByRole("link", { name: "Write" }).click();
+await page.getByRole("link", { name: /^Write/ }).click();
 await page.getByRole("button", { name: "Suggest an outline" }).click();
 await page.getByText("What to cover in this section").waitFor({ timeout: 60_000 });
 const text = "Large language models have been evaluated for diagnosis support in several settings [1]. "
@@ -107,7 +116,7 @@ await shot("07-write");
 await page.getByRole("button", { name: /Example draft/ }).click();
 await page.getByRole("button", { name: "Generate example" }).click();
 await page.locator("h4").first().waitFor({ timeout: 60_000 });
-const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: "Word" }).click()]);
+const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: "Word", exact: true }).click()]);
 console.log("  downloaded", dl.suggestedFilename());
 // reload keeps the text
 await page.reload();
@@ -122,16 +131,25 @@ for (let i = 0; i < 3; i++) {
   await page.getByText(/removed\./).waitFor();
   await page.getByRole("button", { name: "Dismiss" }).last().click();
 }
-await page.getByRole("link", { name: "Write" }).click();
+await page.getByRole("link", { name: /^Write/ }).click();
 await page.getByText(/Guide updated: .*papers were removed/).waitFor({ timeout: 60_000 });
 const still = await page.locator("textarea[id^=text-]").inputValue();
 if (!still.startsWith("Large language models")) throw new Error("guide refresh touched the user's text");
+await page.getByRole("button", { name: "Ask about this section" }).click();
+await partner.getByText("Section: Introduction").waitFor();
 await shot("07b-guide-updated");
-await page.getByRole("link", { name: /^Themes/ }).click();
+await page.getByRole("link", { name: /^Explore/ }).click();
 await page.getByText(/Updated for your changes/).waitFor({ timeout: 60_000 });
 await page.getByRole("button", { name: "Ask about this theme" }).first().click();
-await page.getByText(/What do the papers in the/).waitFor();
-await page.getByText(/Sources \(/).last().waitFor({ timeout: 30_000 });
+await partner.getByText(/^Theme: /).waitFor();
+await partner.getByText(/What do the papers in the/).waitFor();
+await partner.getByText(/Sources \(/).last().waitFor({ timeout: 30_000 });
+await shot("07c-theme-partner");
+await partner.getByRole("button", { name: "Close research partner" }).click();
+
+step("old links still work");
+await page.goto(page.url().replace(/\/explore\/themes.*/, "/gaps"));
+await page.waitForURL(/\/explore\/gaps/);
 
 step("share");
 await page.getByRole("link", { name: "Share" }).last().click();
@@ -140,9 +158,14 @@ await shot("08-share");
 
 step("mobile");
 await page.setViewportSize({ width: 390, height: 844 });
+await page.getByRole("link", { name: /^Explore/ }).click();
 await page.getByRole("link", { name: /^Gaps/ }).click();
 await page.waitForTimeout(400);
 await shot("09-mobile-gaps");
+await page.getByRole("button", { name: "Research partner" }).click();
+await page.getByRole("complementary", { name: "Research partner" }).waitFor();
+await shot("09b-mobile-partner");
+await page.getByRole("button", { name: "Close research partner" }).click();
 
 step("logout");
 await page.setViewportSize({ width: 1440, height: 1000 });

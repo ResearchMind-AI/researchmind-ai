@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, MessageSquare, RefreshCw } from "lucide-react";
 import { api } from "../api";
@@ -7,11 +6,10 @@ import { CitedText, Empty, ErrorNote, PageLoading, RefBadges, Spinner, useToast 
 import { useSession } from "./SessionLayout";
 
 export default function ThemesView() {
-  const { sid, session, papers, kept, paperMap, running } = useSession();
+  const { sid, session, papers, kept, paperMap, running, openPartner } = useSession();
   const qc = useQueryClient();
   const toast = useToast();
   const analysis = useQuery({ queryKey: ["analysis", sid], queryFn: () => api.analysis(sid) });
-  const navigate = useNavigate();
   const [autoNote, setAutoNote] = useState<string | null>(null);
   const regen = useMutation({
     mutationFn: (_auto: boolean) => api.regenerateThemes(sid),
@@ -94,7 +92,7 @@ export default function ThemesView() {
             </div>
             {t.top_authors.length > 0 && <div className="flex flex-wrap gap-1.5">{t.top_authors.slice(0, 5).map((a) => <span key={a} className="chip">{a}</span>)}</div>}
             {session.can_edit && (
-              <button className="btn btn-sm self-start" onClick={() => navigate(`/s/${sid}/chat`, { state: { ask: `What do the papers in the "${t.label}" theme find, and where do they disagree?` } })}>
+              <button className="btn btn-sm self-start" onClick={() => openPartner({ kind: "theme", index: i, label: t.label }, `What do the papers in the "${t.label}" theme find, and where do they disagree?`)}>
                 <MessageSquare size={14} aria-hidden="true" />Ask about this theme
               </button>
             )}

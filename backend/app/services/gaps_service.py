@@ -66,7 +66,7 @@ def get_gap(db: DBSession, gap_id: int) -> Optional[Gap]:
 
 
 def update_gap(db: DBSession, gap: Gap, *, pinned: Optional[bool] = None, status: Optional[str] = None,
-               notes: Optional[str] = None) -> Gap:
+               notes: Optional[str] = None, research_question: Optional[str] = None) -> Gap:
     if pinned is not None:
         gap.pinned = pinned
     if status is not None:
@@ -75,6 +75,8 @@ def update_gap(db: DBSession, gap: Gap, *, pinned: Optional[bool] = None, status
         gap.status = status
     if notes is not None:
         gap.notes = notes
+    if research_question is not None:
+        gap.research_question = research_question.strip() or None
     db.commit()
     return gap
 

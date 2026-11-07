@@ -1,10 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
-import { ExternalLink, Pin, PinOff, Plus, SearchCheck, Sparkles, Target, Trash2, User as UserIcon } from "lucide-react";
+import { Check, ExternalLink, MessageSquare, Pin, Plus, SearchCheck, Sparkles, Target, Trash2, User as UserIcon } from "lucide-react";
 import { api } from "../api";
 import type { Gap, GapStatus } from "../types";
-import ChatThread from "../components/ChatThread";
 import { Empty, ErrorNote, Modal, PageLoading, RefBadges, Spinner, useToast } from "../components/ui";
 import { useSession } from "./SessionLayout";
 
@@ -28,7 +27,7 @@ function AddGapModal({ sid, onClose }: { sid: number; onClose: () => void }) {
   const [assess, setAssess] = useState(true);
   const add = useMutation({
     mutationFn: () => api.addGap(sid, title.trim(), desc.trim(), assess),
-    onSuccess: (g) => { qc.invalidateQueries({ queryKey: ["gaps", sid] }); onClose(); navigate(`/s/${sid}/gaps/${g.id}`); },
+    onSuccess: (g) => { qc.invalidateQueries({ queryKey: ["gaps", sid] }); onClose(); navigate(`/s/${sid}/explore/gaps/${g.id}`); },
     onError: (e: Error) => toast(e.message, "error"),
   });
   function submit(e: FormEvent) { e.preventDefault(); add.mutate(); }
@@ -54,10 +53,10 @@ function AddGapModal({ sid, onClose }: { sid: number; onClose: () => void }) {
 
 function GapItem({ g, sid, active }: { g: Gap; sid: number; active: boolean }) {
   return (
-    <Link to={`/s/${sid}/gaps/${g.id}`} aria-current={active ? "page" : undefined}
+    <Link to={`/s/${sid}/explore/gaps/${g.id}`} aria-current={active ? "page" : undefined}
       className={`flex flex-col gap-1 rounded-xl border px-3.5 py-3 text-ink no-underline ${active ? "border-teal bg-teal-wash" : "border-line bg-white hover:border-teal-line"}`}>
       <span className="flex items-start gap-2">
-        {g.pinned && <Pin size={14} className="mt-0.5 flex-none text-amber" aria-label="Pinned" />}
+        {g.pinned && <Pin size={14} className="mt-0.5 flex-none text-amber" aria-label="Tracked" />}
         <span className={`text-sm font-semibold leading-snug ${g.status === "dropped" ? "text-ink-muted line-through" : ""}`}>{g.title}</span>
       </span>
       <span className="flex flex-wrap gap-1.5 text-xs text-ink-muted">
@@ -94,7 +93,7 @@ function Notes({ g, sid, canEdit }: { g: Gap; sid: number; canEdit: boolean }) {
 }
 
 function GapDetail({ g }: { g: Gap }) {
-  const { sid, session, papers, paperMap } = useSession();
+  const { sid, session, papers, paperMap, openPartner } = useSession();
   const qc = useQueryClient();
   const toast = useToast();
   const navigate = useNavigate();
@@ -112,7 +111,7 @@ function GapDetail({ g }: { g: Gap }) {
   });
   async function remove() {
     if (!window.confirm("Delete this gap and its discussion?")) return;
-    try { await api.deleteGap(sid, g.id); qc.invalidateQueries({ queryKey: ["gaps", sid] }); navigate(`/s/${sid}/gaps`); }
+    try { await api.deleteGap(sid, g.id); qc.invalidateQueries({ queryKey: ["gaps", sid] }); navigate(`/s/${sid}/explore/gaps`); }
     catch (e) { toast((e as Error).message, "error"); }
   }
   const a = g.assessment;
@@ -137,8 +136,13 @@ function GapDetail({ g }: { g: Gap }) {
             <select id="gap-status" className="input h-9 w-auto py-0" value={g.status} onChange={(e) => update.mutate({ status: e.target.value as GapStatus })}>
               {STATUS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
-            <button className={`btn btn-sm ${g.pinned ? "border-amber-line bg-amber-soft text-amber-ink" : ""}`} onClick={() => update.mutate({ pinned: !g.pinned })} aria-pressed={g.pinned}>
-              {g.pinned ? <><PinOff size={14} />Unpin</> : <><Pin size={14} />Pin</>}
+            <button className={`btn btn-sm ${g.pinned ? "border-teal-line bg-teal-soft text-teal-ink" : ""}`} aria-pressed={g.pinned}
+              title={g.pinned ? "Stop tracking" : "Track this gap"}
+              onClick={() => update.mutate({ pinned: !g.pinned }, {
+                // Tracking a gap checks it straight away, so the verdict is just there.
+                onSuccess: () => { if (!g.pinned && !g.assessment) assess.mutate(); },
+              })}>
+              {g.pinned ? <><Check size={14} />Tracked</> : <><Pin size={14} />Track this gap</>}
             </button>
             <button className="btn btn-sm btn-ghost" onClick={remove} aria-label="Delete gap" title="Delete gap"><Trash2 size={14} /></button>
           </div>
@@ -185,7 +189,7 @@ function GapDetail({ g }: { g: Gap }) {
         <section className="flex flex-col gap-3">
           <div className="sub">Evidence in your papers</div>
           {a.evidence.summary && <p className="text-sm text-ink-2">{a.evidence.summary}</p>}
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
             {([["Supports the gap", a.evidence.supporting], ["Cuts against it", a.evidence.contradicting]] as const).map(([label, items]) => items.length > 0 && (
               <div key={label} className="flex flex-col gap-2">
                 <div className="text-[13px] font-semibold text-ink-2">{label}</div>
@@ -200,11 +204,11 @@ function GapDetail({ g }: { g: Gap }) {
 
       <Notes g={g} sid={sid} canEdit={canEdit} />
 
-      <section className="flex flex-col gap-3 border-t border-line pt-5">
-        <div className="sub">Discuss this gap</div>
-        <ChatThread key={g.id} sid={sid} gapId={g.id} paperMap={paperMap} canAsk={canEdit} compact
-          placeholder="Ask about this gap, e.g. how could I study it?"
-          suggestions={["How could I design a study to address this?", "What would make this gap hard to study?", "Which of my papers come closest to it?"]} />
+      <section className="flex flex-wrap items-center gap-3 border-t border-line pt-5">
+        <button className="btn" onClick={() => openPartner({ kind: "gap", id: g.id, title: g.title })}>
+          <MessageSquare size={16} aria-hidden="true" />Discuss with your research partner
+        </button>
+        <span className="text-[13px] text-ink-muted">It knows this gap, its check and your notes.</span>
       </section>
     </div>
   );
@@ -226,10 +230,15 @@ export default function GapsView() {
 
   const list = gaps.data ?? [];
   const selected = list.find((g) => String(g.id) === gapId);
+  const { setPageContext } = useSession();
+  useEffect(() => {
+    setPageContext(selected ? { kind: "gap", id: selected.id, title: selected.title } : null);
+    return () => setPageContext(null);
+  }, [selected?.id, selected?.title, setPageContext]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!gapId && list.length && window.matchMedia("(min-width: 1024px)").matches) {
       const first = list.find((g) => g.pinned) ?? list[0];
-      navigate(`/s/${sid}/gaps/${first.id}`, { replace: true });
+      navigate(`/s/${sid}/explore/gaps/${first.id}`, { replace: true });
     }
   }, [gapId, list, navigate, sid]);
 
@@ -259,12 +268,12 @@ export default function GapsView() {
   }
 
   return (
-    <div className="grid items-start gap-5 lg:grid-cols-[320px_1fr]">
+    <div className="grid items-start gap-5 lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]">
       <aside className={`flex flex-col gap-4 ${selected ? "hidden lg:flex" : ""}`} aria-label="Gaps">
         {session.can_edit && <button className="btn btn-primary" onClick={() => setAdding(true)}><Plus size={16} aria-hidden="true" />Add your own gap</button>}
         <div className="flex flex-col gap-2">
-          <div className="sub">My gaps · {mine.length}</div>
-          {mine.length === 0 && <div className="rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] text-ink-muted">Pin a suggestion or add your own to keep it here.</div>}
+          <div className="sub">Tracked · {mine.length}</div>
+          {mine.length === 0 && <div className="rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] text-ink-muted">Track a suggestion or add your own to keep it here.</div>}
           {mine.map((g) => <GapItem key={g.id} g={g} sid={sid} active={g.id === selected?.id} />)}
         </div>
         <div className="flex flex-col gap-2">
@@ -278,7 +287,7 @@ export default function GapsView() {
       <div className={selected ? "" : "hidden lg:block"}>
         {selected ? (
           <div className="flex flex-col gap-3">
-            <Link to={`/s/${sid}/gaps`} className="text-sm font-semibold lg:hidden">← All gaps</Link>
+            <Link to={`/s/${sid}/explore/gaps`} className="text-sm font-semibold lg:hidden">← All gaps</Link>
             <GapDetail g={selected} />
           </div>
         ) : <Empty icon={<Target size={22} />} title="Pick a gap">Select a gap on the left to see its evidence and discuss it.</Empty>}

@@ -19,10 +19,19 @@ from app.services.llm import LLMClient
 from app.services.vector_store import VectorStoreService
 
 SYSTEM = (
-    "You are ResearchMind, a research assistant. Answer ONLY from the numbered sources "
-    "provided. Cite every claim with the source number in square brackets, e.g. [3] or [2][5]. "
-    "If the sources do not contain the answer, say so plainly and suggest what to search for. "
-    "Be concise and precise; use short paragraphs or bullet points."
+    "You are the researcher's research partner in ResearchMind: a knowledgeable colleague "
+    "working through their literature with them, not a search box.\n"
+    "- Answer ONLY from the numbered sources provided. Cite every claim with the source number "
+    "in square brackets, e.g. [3] or [2][5]. If the sources don't contain the answer, say so "
+    "plainly and suggest what to search for or which paper to upload.\n"
+    "- Be honest and critical: point out weak evidence, small samples, conflicting results, and "
+    "when an idea looks already done. Don't just agree.\n"
+    "- Refer to their work naturally (their key papers, notes, tracked gaps) when it's relevant.\n"
+    "- When the best answer depends on something only they know (access to data, their field, "
+    "their aims), end with ONE short question back to them.\n"
+    "- Never write paragraphs of their literature review for them. Help with structure, evidence "
+    "and argument; they do the writing.\n"
+    "Be concise: short paragraphs or bullet points."
 )
 CITE_RE = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
 
@@ -55,7 +64,8 @@ def validate_citations(text: str, allowed: set) -> (str, List[int]):
 
 
 async def build_context(db: DBSession, session_id: int, question: str,
-                        k_chunks: int = 8, per_paper: int = 2, gap=None) -> ChatContext:
+                        k_chunks: int = 8, per_paper: int = 2, gap=None,
+                        focus: Optional[Dict] = None) -> ChatContext:
     """Retrieve sources for a question. With `gap`, the chat is about that research gap:
     its evidence papers are retrieved first and the history is the gap's own thread."""
     papers = list_session_papers(db, session_id)
@@ -64,9 +74,15 @@ async def build_context(db: DBSession, session_id: int, question: str,
     store = VectorStoreService(db)
 
     query = question if gap is None else f"{question}\n\nResearch gap: {gap.title}. {gap.description or ''}"
+    if focus and focus.get("kind") == "theme":
+        query = f"{question}\n\nTheme: {focus.get('label', '')}"
+    elif focus and focus.get("kind") == "section":
+        query = f"{question}\n\nSection: {focus.get('heading', '')}"
     q_vec = await EmbeddingService().generate_embedding(query)
     hits = []
     evidence = [i for i in (gap.evidence_paper_ids or []) if i in refs] if gap is not None else []
+    if focus and focus.get("paper_ids"):
+        evidence = [i for i in focus["paper_ids"] if i in refs][:12]
     if evidence:
         hits.extend(store.search(session_id, q_vec, n_results=4, paper_ids=evidence))
     key = key_paper_ids(papers)
@@ -106,6 +122,13 @@ async def build_context(db: DBSession, session_id: int, question: str,
         system += "\n\nThemes in this session (use them to place findings, e.g. 'this sits under theme 2'):\n" + \
             "\n".join(f"{i + 1}. {t['label']}: papers " + ", ".join(f"[{refs[p]}]" for p in t.get("paper_ids", [])[:8] if p in refs)
                       for i, t in enumerate(themes))
+    if focus and focus.get("kind") == "theme":
+        system += (f"\n\nThe researcher is asking about the theme \"{focus.get('label')}\". "
+                   "Focus on that theme's papers and how they relate to the rest.")
+    if focus and focus.get("kind") == "section":
+        system += (f"\n\nThe researcher is writing the section \"{focus.get('heading')}\" of their review. "
+                   "Their current draft of it:\n\"\"\"" + (focus.get("text") or "(nothing yet)")[:2000] + "\"\"\"\n"
+                   "Help them think, find evidence and structure it. Do not write sentences for the review.")
     if gap is not None:
         system += (
             "\n\nThis conversation is about one research gap the researcher is exploring:\n"

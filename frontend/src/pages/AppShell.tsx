@@ -117,7 +117,7 @@ export default function AppShell({ user }: { user: User }) {
       </aside>
       </div>
 
-      <main className="min-w-0 flex-1 px-4 pb-14 pt-6 md:px-10 md:pt-7">
+      <main className="min-w-0 flex-1 px-4 pb-14 pt-6 transition-[padding] md:px-10 md:pt-7 xl:pr-[calc(2.5rem+var(--rm-partner,0px))]">
         <div className="mx-auto max-w-[1120px]">
           <Outlet context={{ openNew: () => setCreating(true) }} />
         </div>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { BookOpen, ChevronDown, ChevronUp, ExternalLink, FileText, Info, Pencil, Search, Star, Upload, X } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronUp, ExternalLink, FileText, Pencil, Search, Star, Upload, X } from "lucide-react";
 import { api } from "../api";
 import { REMOVE_REASONS, type Paper } from "../types";
 import { Empty, Modal, Spinner, useToast } from "../components/ui";
@@ -12,8 +13,6 @@ const SOURCE_LABEL: Record<string, string> = {
 const reasonLabel = (r: string | null) => REMOVE_REASONS.find((x) => x.value === r)?.label;
 type View = "kept" | "key" | "removed";
 
-function readFlag(k: string) { try { return localStorage.getItem(k) === "1"; } catch { return false; } }
-function setFlag(k: string) { try { localStorage.setItem(k, "1"); } catch { /* private mode */ } }
 
 function NoteEditor({ p, onSave, onClose }: { p: Paper; onSave: (v: string) => void; onClose: () => void }) {
   const [v, setV] = useState(p.notes ?? "");
@@ -116,12 +115,12 @@ export default function PapersView() {
   const fileRef = useRef<HTMLInputElement>(null);
   const attachTo = useRef<Paper | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
-  const [view, setView] = useState<View>("kept");
+  const [params] = useSearchParams();
+  const [view, setView] = useState<View>(() => (["kept", "key", "removed"].includes(params.get("view") ?? "") ? params.get("view") as View : "kept"));
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"number" | "year" | "citations">("number");
   const [doiOpen, setDoiOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [hintSeen, setHintSeen] = useState(() => readFlag("rm.hint.papers"));
   const [justRemoved, setJustRemoved] = useState<Paper | null>(null);
   const canEdit = session.can_edit;
 
@@ -231,13 +230,7 @@ export default function PapersView() {
     <div className="flex flex-col gap-5" onDragOver={(e) => { if (canEdit) { e.preventDefault(); setDragging(true); } }}
       onDragLeave={(e) => { if (e.currentTarget === e.target) setDragging(false); }} onDrop={onDrop}>
       {fileInput}
-      {canEdit && !hintSeen && (
-        <div className="flex items-center gap-3 rounded-xl bg-teal-soft px-4 py-3 text-teal-ink">
-          <Info size={18} className="flex-none" aria-hidden="true" />
-          <span className="flex-1 text-sm">Remove papers that aren't relevant and star the key ones. Themes, gaps, answers and the writing guide only use the papers you keep.</span>
-          <button className="btn btn-sm btn-ghost text-teal-ink" onClick={() => { setFlag("rm.hint.papers"); setHintSeen(true); }}>Got it</button>
-        </div>
-      )}
+      <p className="-mb-1 max-w-3xl text-sm text-ink-muted"><b className="text-ink">Papers</b>: remove the ones that aren't relevant and star the key ones. Themes, gaps, answers and the writing guide only use the papers you keep.</p>
 
       <section className="card flex flex-wrap items-center gap-x-4 gap-y-3 px-5 py-4" aria-label="Screening summary">
         {sc.screened != null && <><div><div className="text-2xl font-bold">{sc.screened}</div><div className="text-xs font-semibold text-ink-muted">Screened</div></div><span className="text-ink-muted" aria-hidden="true">→</span></>}

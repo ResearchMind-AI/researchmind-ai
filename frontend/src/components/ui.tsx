@@ -87,7 +87,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2" aria-live="polite">
+      <div className="fixed bottom-5 left-5 z-50 flex flex-col gap-2" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className={`flex max-w-sm items-start gap-3 rounded-xl px-4 py-3 text-sm shadow-lg ${t.tone === "error" ? "bg-[#7F1D1D] text-white" : "bg-navy text-white"}`}>
             <span className="flex-1">{t.text}</span>

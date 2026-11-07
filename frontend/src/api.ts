@@ -1,7 +1,7 @@
 // Small typed client for the FastAPI backend. Auth is an httpOnly cookie, so
 // requests just include credentials; no token handling in the browser.
 import type {
-  AppConfig, Changes, ChatMessage, Citation, Discovery, Example, Gap, Member, Paper, Screening, Section, SessionInfo,
+  AppConfig, Changes, ChatMessage, Notice, Citation, Discovery, Example, Gap, Member, Paper, Screening, Section, SessionInfo,
   SourceStatus, Themes, User, Writing, Feedback,
 } from "./types";
 
@@ -67,7 +67,8 @@ export const api = {
   suggestGaps: (id: number) => request<unknown>("POST", `${S(id)}/gaps`),
   addGap: (id: number, title: string, description: string, assess: boolean) =>
     request<Gap>("POST", `${S(id)}/gaps/custom`, { title, description, assess }),
-  updateGap: (id: number, gapId: number, patch: Partial<Pick<Gap, "pinned" | "status" | "notes">>) =>
+  notices: (id: number) => request<Notice[]>("GET", `${S(id)}/partner/notices`),
+  updateGap: (id: number, gapId: number, patch: Partial<Pick<Gap, "pinned" | "status" | "notes" | "research_question">>) =>
     request<Gap>("PATCH", `${S(id)}/gaps/${gapId}`, patch),
   assessGap: (id: number, gapId: number) => request<Gap>("POST", `${S(id)}/gaps/${gapId}/assess`),
   deleteGap: (id: number, gapId: number) => request<void>("DELETE", `${S(id)}/gaps/${gapId}`),

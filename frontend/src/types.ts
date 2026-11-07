@@ -5,7 +5,7 @@ export interface SourceStatus { name: string; label: string; mode: "full" | "lim
 export type Role = "owner" | "lead" | "contributor" | "reviewer" | "viewer";
 export interface SessionInfo {
   id: number; title: string; topic: string | null; role: Role; can_edit: boolean; can_manage: boolean;
-  paper_count: number; theme_count: number; gap_count: number; created_at: string; updated_at: string | null;
+  paper_count: number; theme_count: number; gap_count: number; words?: number; created_at: string; updated_at: string | null;
 }
 export interface SourceRun { label: string; mode: "full" | "limited"; found: number; errors: number }
 export interface Discovery {
@@ -66,6 +66,14 @@ export interface Section {
   id: number; position: number; heading: string; kind: string; guidance: Guidance | null;
   user_text: string | null; feedback: Feedback | null; words: number;
 }
+export interface NoticeAction { label: string; to?: string; ask?: string; gap_id?: number }
+export interface Notice { id: string; text: string; actions: NoticeAction[] }
+/** What the research partner panel is about. */
+export type PartnerContext =
+  | { kind: "session" }
+  | { kind: "gap"; id: number; title: string }
+  | { kind: "theme"; index: number; label: string }
+  | { kind: "section"; id: number; heading: string };
 export interface Changes {
   papers_added: number; papers_removed: number; key_changed: number; gaps_tracked: number; gaps_untracked: number; summary: string;
 }

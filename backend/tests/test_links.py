@@ -68,3 +68,43 @@ def test_chat_context_includes_themes_and_gap_check(db, monkeypatch):
     events(owner.post(f"{base}/chat/stream", json={"question": "How could I study it?", "gap_id": gap["id"]}))
     assert seen and "Themes in this session" in seen[0]
     assert "Novelty check:" in seen[-1] and "regional health board" in seen[-1]
+
+
+def test_partner_focus_and_notices(db, monkeypatch):
+    from app.services import chat_service
+    owner = client_for("p@x.com")
+    s = owner.post("/api/v1/research/sessions", json={"topic": "LLMs for clinical decision support"}).json()
+    base = f"/api/v1/research/sessions/{s['id']}"
+    events(owner.post(f"{base}/analyse/stream", json={"max_papers": 12}))
+    assert [n["id"] for n in owner.get(f"{base}/partner/notices").json()] == ["no-key-papers"]
+
+    seen = []
+    real = chat_service.build_context
+    async def spy(*a, **k):
+        ctx = await real(*a, **k)
+        seen.append((k.get("focus"), ctx.system, [c["paper_id"] for c in ctx.sources]))
+        return ctx
+    monkeypatch.setattr(chat_service, "build_context", spy)
+
+    themes = owner.get(f"{base}/analysis").json()["analysis"]["themes"]
+    events(owner.post(f"{base}/chat/stream", json={"question": "What do they find?", "theme": 0}))
+    focus, system, used = seen[-1]
+    assert focus["kind"] == "theme" and themes[0]["label"] in system
+    assert set(used) & set(themes[0]["paper_ids"])
+    assert owner.post(f"{base}/chat/stream", json={"question": "x?", "theme": 99}).status_code == 404
+
+    secs = owner.post(f"{base}/writing/outline").json()
+    owner.put(f"{base}/writing/sections/{secs[0]['id']}", json={"user_text": "My draft cites [2] and [3]."})
+    events(owner.post(f"{base}/chat/stream", json={"question": "Is this well supported?", "section_id": secs[0]["id"]}))
+    focus, system, _ = seen[-1]
+    assert focus["kind"] == "section" and "My draft cites [2] and [3]." in system and "Do not write sentences" in system
+
+    # notices react to the session
+    papers = owner.get(f"{base}/papers").json()
+    owner.patch(f"{base}/papers/{papers[1]['id']}", json={"status": "removed"})
+    owner.patch(f"{base}/papers/{papers[0]['id']}", json={"is_key": True})
+    ids = [n["id"] for n in owner.get(f"{base}/partner/notices").json()]
+    assert any(i.startswith(f"removed-cite-{secs[0]['id']}-2") for i in ids)
+    assert any(i.startswith("key-abstract-only") for i in ids) and "no-key-papers" not in ids
+    note = next(n for n in owner.get(f"{base}/partner/notices").json() if n["id"].startswith("removed-cite"))
+    assert "[2]" in note["text"] and note["actions"][0]["to"].startswith("write?section=")

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Download, Lightbulb, ListChecks, PenLine, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Download, Lightbulb, ListChecks, MessageSquare, PenLine, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Feedback, Section, Writing } from "../types";
 import { CitedText, Empty, ErrorNote, PageLoading, RefBadges, Spinner, useToast } from "../components/ui";
@@ -53,7 +53,7 @@ function FeedbackCard({ f, paperMap }: { f: Feedback; paperMap: ReturnType<typeo
         <span className="text-[13px] text-ink-muted">{f.words} words{f.target_words ? ` · aim for about ${f.target_words}` : ""}</span>
       </div>
       {f.summary && <p className="text-sm text-ink-2">{f.summary}</p>}
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
         {groups.map(({ key, title, icon: Icon, tone, items }) => (
           <div key={key} className={`flex flex-col gap-2 rounded-xl border p-3.5 ${tone}`}>
             <div className="flex items-center gap-2 text-sm font-semibold"><Icon size={16} aria-hidden="true" />{title} <span className="font-normal text-ink-muted">· {items.length}</span></div>
@@ -68,7 +68,7 @@ function FeedbackCard({ f, paperMap }: { f: Feedback; paperMap: ReturnType<typeo
 }
 
 function SectionEditor({ s, canEdit }: { s: Section; canEdit: boolean }) {
-  const { sid, paperMap } = useSession();
+  const { sid, paperMap, openPartner } = useSession();
   const qc = useQueryClient();
   const toast = useToast();
   const [text, setText] = useState(s.user_text ?? "");
@@ -79,7 +79,7 @@ function SectionEditor({ s, canEdit }: { s: Section; canEdit: boolean }) {
   const writeCache = (sec: Section) => qc.setQueryData<Writing>(["writing", sid], (w) => w && { ...w, sections: w.sections.map((x) => (x.id === sec.id ? { ...x, ...sec } : x)) });
   const save = async (v: string, h = heading) => {
     setStatus("saving");
-    try { const sec = await api.saveSection(sid, s.id, v, h.trim() || s.heading); writeCache(sec); setDirty(false); setStatus("saved"); }
+    try { const sec = await api.saveSection(sid, s.id, v, h.trim() || s.heading); writeCache(sec); setDirty(false); setStatus("saved"); qc.invalidateQueries({ queryKey: ["session", sid] }); }
     catch (e) { setStatus("idle"); toast((e as Error).message, "error"); }
   };
   useAutosave((v) => save(v), text, dirty);
@@ -105,7 +105,7 @@ function SectionEditor({ s, canEdit }: { s: Section; canEdit: boolean }) {
             </ul>
           )}
           {(g.agreements.length > 0 || g.disagreements.length > 0 || g.questions.length > 0) && (
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
               {([["Where studies agree", g.agreements, "bg-teal-wash border-teal-line"], ["Where they disagree", g.disagreements, "bg-amber-wash border-amber-line"], ["Questions to answer", g.questions, "bg-ground border-line"]] as const)
                 .filter(([, items]) => items.length).map(([label, items, tone]) => (
                   <div key={label} className={`flex flex-col gap-1.5 rounded-xl border p-3.5 ${tone}`}>
@@ -138,6 +138,9 @@ function SectionEditor({ s, canEdit }: { s: Section; canEdit: boolean }) {
           <div className="flex flex-wrap items-center gap-2">
             <button className="btn btn-primary" onClick={() => check.mutate()} disabled={check.isPending || words < 15}>
               {check.isPending ? <Spinner /> : <Check size={16} aria-hidden="true" />}Save and check
+            </button>
+            <button className="btn" onClick={async () => { if (dirty) await save(text); openPartner({ kind: "section", id: s.id, heading: s.heading }); }}>
+              <MessageSquare size={16} aria-hidden="true" />Ask about this section
             </button>
             {words < 15 && <span className="text-[13px] text-ink-muted">Write at least a few sentences to get feedback.</span>}
           </div>
@@ -188,7 +191,7 @@ function ExampleDraft({ sid, canEdit }: { sid: number; canEdit: boolean }) {
 }
 
 export default function WriteView() {
-  const { sid, session, papers } = useSession();
+  const { sid, session, papers, setPageContext } = useSession();
   const qc = useQueryClient();
   const toast = useToast();
   const [params, setParams] = useSearchParams();
@@ -209,6 +212,12 @@ export default function WriteView() {
     onError: () => setGuideNote(null),
   });
   const guideRan = useRef(false);
+  // The research partner follows the section being written.
+  const sel = writing.data?.sections.find((x) => String(x.id) === params.get("section")) ?? writing.data?.sections[0];
+  useEffect(() => {
+    setPageContext(sel ? { kind: "section", id: sel.id, heading: sel.heading } : null);
+    return () => setPageContext(null);
+  }, [sel?.id, sel?.heading, setPageContext]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (writing.data?.guide_changes && canEdit && !guideRan.current) { guideRan.current = true; guideRefresh.mutate(); }
   }, [writing.data, canEdit, guideRefresh]);
@@ -267,6 +276,7 @@ export default function WriteView() {
         </div>
       </div>
 
+      <p className="-mt-2 text-sm text-ink-muted"><b className="text-ink">Write</b> your literature review section by section. The guide suggests what to cover and which papers support it; you do the writing.</p>
       {(guideRefresh.isPending || guideNote) && (
         <div className="flex items-center gap-2 text-[13px] text-ink-muted" role="status">
           {guideRefresh.isPending ? <><Spinner />Updating the guide for your latest changes…</> : <><RefreshCw size={14} className="text-teal" aria-hidden="true" />{guideNote}</>}
