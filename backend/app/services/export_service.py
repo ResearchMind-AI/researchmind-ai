@@ -296,7 +296,7 @@ def to_pdf(doc_data: Dict) -> bytes:
 
 def render(db: DBSession, session_id: int, review: Dict, style: str, fmt: str,
            user_written: bool = False) -> bytes:
-    data = format_review(review, list_session_papers(db, session_id), style)
+    data = format_review(review, list_session_papers(db, session_id, include_removed=True), style)
     if user_written:
         data["byline"], data["note"] = "Prepared with ResearchMind AI", None
     return to_docx(data) if fmt == "docx" else to_pdf(data)

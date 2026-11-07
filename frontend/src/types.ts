@@ -16,7 +16,18 @@ export interface Paper {
   id: number; n: number; title: string; authors: string[]; year: number | null; journal: string | null;
   doi: string | null; url: string | null; abstract: string | null; citations: number; found_in: string[];
   uploaded: boolean;
+  status: "kept" | "removed"; is_key: boolean; notes: string | null; removed_reason: string | null;
+  full_text: boolean; full_text_source: string | null; added_at: string | null;
 }
+export interface Screening {
+  screened: number | null; found: number; kept: number; removed: number; key: number;
+  removed_reasons: Record<string, number>;
+}
+export const REMOVE_REASONS: { value: string; label: string }[] = [
+  { value: "off_topic", label: "Off-topic" }, { value: "wrong_population", label: "Wrong population" },
+  { value: "wrong_study_type", label: "Wrong study type" }, { value: "not_peer_reviewed", label: "Not peer-reviewed" },
+  { value: "duplicate", label: "Duplicate" }, { value: "other", label: "Other" },
+];
 export interface Theme {
   label: string; summary: string; key_findings: string[]; key_paper_ids: number[]; paper_ids: number[];
   top_authors: string[]; year_range: [number, number] | null; size: number;

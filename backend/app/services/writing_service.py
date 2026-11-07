@@ -223,7 +223,9 @@ async def check_section(db: DBSession, section: WritingSection, llm: Optional[LL
     refs = reference_numbers(papers)
     by_n = {n: p for p in papers for n in [refs[p.id]]}
     cited = cited_numbers(text)
-    unknown = [n for n in cited if n not in by_n]
+    every = {p.session_ref: p for p in list_session_papers(db, section.session_id, include_removed=True)}
+    removed = [n for n in cited if n not in by_n and n in every]
+    unknown = [n for n in cited if n not in by_n and n not in every]
 
     vec = await EmbeddingService().generate_embedding(text[:6000])
     hits = VectorStoreService(db).search(section.session_id, vec, n_results=20)
@@ -275,6 +277,8 @@ Only use paper numbers listed above."""
         "strengths": [str(s) for s in data.get("strengths") or []][:3],
         "summary": str(data.get("summary", "")),
         "unknown_refs": unknown,
+        "removed_refs": [{"n": n, "title": every[n].title,
+                          "reason": every[n].session_link.removed_reason} for n in removed],
         "words": word_count(text),
         "target_words": (section.guidance or {}).get("target_words"),
     }

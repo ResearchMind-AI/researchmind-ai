@@ -201,6 +201,43 @@ def upsert_paper(db: DBSession, r: PaperSearchResult) -> Paper:
     return paper
 
 
+DOI_CLEAN = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
+
+
+class AddPaperError(Exception):
+    pass
+
+
+async def add_paper_by_doi(db: DBSession, session_id: int, user_id: int, doi: str) -> Paper:
+    """Look a paper up by DOI and add it to the session as a kept paper."""
+    from app.services.triage_service import next_ref_no
+    doi = DOI_CLEAN.sub("", doi.strip()).strip().rstrip(".")
+    if not re.match(r"^10\.\d{4,9}/\S+$", doi):
+        raise AddPaperError("That doesn't look like a DOI. It should start with 10., e.g. 10.1038/s41591-023-02448-8")
+    r = await all_sources()["openalex"].get_by_doi(doi)
+    if r is None:
+        raise AddPaperError("No paper found for that DOI. Check it, or upload the PDF instead.")
+    paper = upsert_paper(db, r)
+    link = db.query(SessionPaper).filter(SessionPaper.session_id == session_id,
+                                         SessionPaper.paper_id == paper.id).first()
+    if link is not None:
+        state = "removed earlier; restore it from Removed" if link.status == "removed" else "already here"
+        raise AddPaperError(f"This paper is [{link.ref_no}] in this session ({state}).")
+    extra = dict(paper.extra_metadata or {})
+    extra["found_in"] = sorted(set(extra.get("found_in", [])) | {"doi"})
+    paper.extra_metadata = extra
+    db.add(SessionPaper(session_id=session_id, paper_id=paper.id, added_by_user_id=user_id,
+                        relevance_score=5, ref_no=next_ref_no(db, session_id)))
+    db.flush()
+    embedder = EmbeddingService()
+    chunks = embedder.chunk_text(paper_document(r))
+    vectors = await embedder.generate_embeddings_batch(chunks)
+    await VectorStoreService(db).add_paper_embeddings(session_id, paper.id, chunks, vectors)
+    paper.embedding_generated = True
+    db.commit()
+    return paper
+
+
 def save_artifact(db: DBSession, session_id: int, kind: str, content: dict) -> None:
     row = db.query(SessionArtifact).filter(SessionArtifact.session_id == session_id,
                                            SessionArtifact.kind == kind).first()
@@ -301,7 +338,10 @@ async def discover_papers(
 
     say("Saving papers and embeddings…")
     store = VectorStoreService(db)
+    # Every paper ever in the session counts, so removed papers never come back.
     existing = {sp.paper_id for sp in db.query(SessionPaper).filter(SessionPaper.session_id == session_id)}
+    from app.services.triage_service import next_ref_no
+    ref_no = next_ref_no(db, session_id)
     added = 0
     for rank, it in enumerate(items):
         if added >= max_papers:
@@ -313,7 +353,8 @@ async def discover_papers(
         extra["found_in"] = sorted(it["found_in"] | set(extra.get("found_in", [])))
         paper.extra_metadata = extra
         db.add(SessionPaper(session_id=session_id, paper_id=paper.id, added_by_user_id=user_id,
-                            relevance_score=max(1, 5 - rank // max(1, max_papers // 5))))
+                            relevance_score=max(1, 5 - rank // max(1, max_papers // 5)), ref_no=ref_no))
+        ref_no += 1
         db.flush()
         await store.add_paper_embeddings(session_id, paper.id, it["chunks"], it["embeddings"])
         paper.embedding_generated = True

@@ -24,6 +24,7 @@ from app.services.export_service import STYLES, draft_review, render
 from app.services.upload_service import UploadError, add_uploaded_paper
 from app.services import gaps_service as gs
 from app.services import writing_service as ws
+from app.services import triage_service as ts
 
 router = APIRouter()
 
@@ -132,14 +133,53 @@ def messages(session_id: int, gap_id: Optional[int] = None,
 
 
 @router.post("/sessions/{session_id}/upload")
-async def upload(session_id: int, file: UploadFile = File(...),
+async def upload(session_id: int, file: UploadFile = File(...), attach_to: Optional[int] = None,
                  current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    """Upload a PDF/DOCX. A copy of a paper already in the session (or the one named by
+    `attach_to`) becomes that paper's full text instead of a new paper."""
     s = _session(db, session_id, current_user, edit=True)
     try:
-        paper = await add_uploaded_paper(db, s.id, current_user.id, file.filename or "upload.pdf", await file.read())
-    except UploadError as e:
+        paper = await add_uploaded_paper(db, s.id, current_user.id, file.filename or "upload.pdf",
+                                         await file.read(), attach_to=attach_to)
+    except (UploadError, ts.TriageError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    return {"paper_id": paper.id, "title": paper.title}
+    return {"paper_id": paper.id, "title": paper.title, "attached": bool(getattr(paper, "attached", False))}
+
+
+class PaperUpdate(BaseModel):
+    status: Optional[str] = None
+    is_key: Optional[bool] = None
+    notes: Optional[str] = Field(None, max_length=4000)
+    removed_reason: Optional[str] = None
+
+
+class DoiBody(BaseModel):
+    doi: str = Field(..., min_length=6, max_length=300)
+
+
+@router.patch("/sessions/{session_id}/papers/{paper_id}")
+def update_paper(session_id: int, paper_id: int, body: PaperUpdate,
+                 current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    """Keep or remove a paper, mark it as a key paper, or edit its note."""
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        ts.update_paper(db, s.id, paper_id, current_user.id, status=body.status, is_key=body.is_key,
+                        notes=body.notes, removed_reason=body.removed_reason)
+    except ts.TriageError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return _paper_out(db, s.id, paper_id)
+
+
+@router.post("/sessions/{session_id}/papers/doi", status_code=201)
+async def add_by_doi(session_id: int, body: DoiBody,
+                     current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    from app.services.discovery_service import AddPaperError, add_paper_by_doi
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        paper = await add_paper_by_doi(db, s.id, current_user.id, body.doi)
+    except AddPaperError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return _paper_out(db, s.id, paper.id)
 
 
 @router.post("/sessions/{session_id}/export")
@@ -318,7 +358,8 @@ def _session_out(db: DBSession, s: Session, user: User) -> dict:
     analysis = get_artifact(db, s.id, "analysis") or {}
     return {"id": s.id, "title": s.title, "topic": s.topic, "role": role,
             "can_edit": access.can_edit(db, s, user), "can_manage": access.can_manage(db, s, user),
-            "paper_count": db.query(SessionPaper).filter(SessionPaper.session_id == s.id).count(),
+            "paper_count": db.query(SessionPaper).filter(SessionPaper.session_id == s.id,
+                                                         SessionPaper.status == "kept").count(),
             "theme_count": len(analysis.get("themes") or []),
             "gap_count": db.query(Gap).filter(Gap.session_id == s.id).count(),
             "created_at": s.created_at, "updated_at": s.updated_at}
@@ -345,6 +386,7 @@ def session_detail(session_id: int, current_user: User = Depends(get_current_act
     s = _session(db, session_id, current_user)
     out = _session_out(db, s, current_user)
     out["discovery"] = get_artifact(db, s.id, "discovery")
+    out["screening"] = ts.screening_summary(db, s.id, (out["discovery"] or {}).get("candidates"))
     return out
 
 
@@ -362,16 +404,33 @@ def delete_session(session_id: int, current_user: User = Depends(get_current_act
 @router.get("/sessions/{session_id}/papers")
 def session_papers(session_id: int, current_user: User = Depends(get_current_active_user),
                    db: DBSession = Depends(get_db)):
-    from app.services.analysis_service import list_session_papers, reference_numbers
+    from app.services.analysis_service import list_session_papers
     s = _session(db, session_id, current_user)
-    papers = list_session_papers(db, s.id)
-    refs = reference_numbers(papers)
-    return [{"id": p.id, "n": refs[p.id], "title": p.title, "authors": p.authors or [],
-             "year": p.publication_date.year if p.publication_date else None, "journal": p.journal,
-             "doi": p.doi, "url": p.url or (f"https://doi.org/{p.doi}" if p.doi else None),
-             "abstract": p.abstract, "citations": p.citations_count or 0,
-             "found_in": (p.extra_metadata or {}).get("found_in") or [p.source.value],
-             "uploaded": bool((p.extra_metadata or {}).get("uploaded"))} for p in papers]
+    return [_paper_dict(p) for p in list_session_papers(db, s.id, include_removed=True)]
+
+
+def _paper_dict(p) -> dict:
+    sp = p.session_link
+    extra = p.extra_metadata or {}
+    return {"id": p.id, "n": p.session_ref, "title": p.title, "authors": p.authors or [],
+            "year": p.publication_date.year if p.publication_date else None, "journal": p.journal,
+            "doi": p.doi, "url": p.url or (f"https://doi.org/{p.doi}" if p.doi else None),
+            "abstract": p.abstract, "citations": p.citations_count or 0,
+            "found_in": extra.get("found_in") or [p.source.value],
+            "uploaded": bool(extra.get("uploaded")),
+            "status": sp.status, "is_key": bool(sp.is_key), "notes": sp.notes,
+            "removed_reason": sp.removed_reason,
+            "full_text": bool(p.full_text), "full_text_source": extra.get("full_text_source")
+                         or ("upload" if extra.get("uploaded") and p.full_text else None),
+            "added_at": sp.added_at}
+
+
+def _paper_out(db: DBSession, session_id: int, paper_id: int) -> dict:
+    from app.services.analysis_service import list_session_papers
+    for p in list_session_papers(db, session_id, include_removed=True):
+        if p.id == paper_id:
+            return _paper_dict(p)
+    raise HTTPException(status.HTTP_404_NOT_FOUND, "Paper not found")
 
 
 @router.get("/sessions/{session_id}/members")
@@ -447,7 +506,7 @@ def get_example(session_id: int, style: str = "APA", current_user: User = Depend
     from app.services.export_service import format_review
     s = _session(db, session_id, current_user)
     review = get_artifact(db, s.id, "lit_review")
-    return format_review(review, list_session_papers(db, s.id), style) if review else None
+    return format_review(review, list_session_papers(db, s.id, include_removed=True), style) if review else None
 
 
 @router.post("/sessions/{session_id}/writing/example")
@@ -457,7 +516,7 @@ async def make_example(session_id: int, current_user: User = Depends(get_current
     from app.services.export_service import format_review
     s = _session(db, session_id, current_user, edit=True)
     review = await draft_review(db, s.id, s.topic or s.title)
-    return format_review(review, list_session_papers(db, s.id), "APA")
+    return format_review(review, list_session_papers(db, s.id, include_removed=True), "APA")
 
 
 def _sse(payload: dict) -> str:

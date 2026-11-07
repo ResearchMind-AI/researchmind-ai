@@ -13,7 +13,7 @@ from typing import AsyncIterator, Dict, List, Optional
 from sqlalchemy.orm import Session as DBSession
 
 from app.models.research import SessionMessage
-from app.services.analysis_service import list_session_papers, reference_numbers
+from app.services.analysis_service import key_paper_ids, list_session_papers, reference_numbers
 from app.services.embedding_service import EmbeddingService
 from app.services.llm import LLMClient
 from app.services.vector_store import VectorStoreService
@@ -69,8 +69,12 @@ async def build_context(db: DBSession, session_id: int, question: str,
     evidence = [i for i in (gap.evidence_paper_ids or []) if i in refs] if gap is not None else []
     if evidence:
         hits.extend(store.search(session_id, q_vec, n_results=4, paper_ids=evidence))
-    hits.extend(h for h in store.search(session_id, q_vec, n_results=k_chunks * 3)
-                if h["chunk_id"] not in {x["chunk_id"] for x in hits})
+    key = key_paper_ids(papers)
+    more = [h for h in store.search(session_id, q_vec, n_results=k_chunks * 3)
+            if h["chunk_id"] not in {x["chunk_id"] for x in hits}]
+    # Key papers get a small boost; removed papers are dropped below (not in refs).
+    more.sort(key=lambda h: h["score"] + (0.05 if h["paper_id"] in key else 0), reverse=True)
+    hits.extend(more)
     chosen, counts = [], {}
     for h in hits:
         if h["paper_id"] not in refs or counts.get(h["paper_id"], 0) >= per_paper:

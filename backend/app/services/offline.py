@@ -66,6 +66,13 @@ class FakeSource:
             ))
         return out
 
+    async def get_by_doi(self, doi: str):
+        if "unknown" in doi:
+            return None
+        r = (await self.search("offline doi"))[1]
+        r.title, r.doi, r.source_id = f"[FAKE] Paper added by DOI {doi}", doi, f"doi-{doi}"
+        return r
+
     async def recommendations(self, paper_id: str, limit: int = 10):
         return []
 

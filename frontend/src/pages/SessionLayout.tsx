@@ -3,13 +3,14 @@ import { NavLink, Outlet, useLocation, useNavigate, useOutletContext, useParams 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Share2, Trash2 } from "lucide-react";
 import { api, analyseUrl, streamSSE, type AnalyseEvent } from "../api";
-import type { Discovery, Paper, SessionInfo } from "../types";
+import type { Discovery, Paper, Screening, SessionInfo } from "../types";
 import { ErrorNote, PageLoading, Spinner, useToast } from "../components/ui";
 
 export interface SessionCtx {
   sid: number;
-  session: SessionInfo & { discovery: Discovery | null };
+  session: SessionInfo & { discovery: Discovery | null; screening: Screening };
   papers: Paper[];
+  kept: Paper[];
   paperMap: Map<number, Paper>;
   running: boolean;
   runAnalysis: () => void;
@@ -98,7 +99,9 @@ export default function SessionLayout() {
   }, [location, navigate, runAnalysis]);
   useEffect(() => () => abort.current?.abort(), [sid]);
 
+  // All papers (removed ones too) so citation numbers always resolve; `kept` drives counts.
   const paperMap = useMemo(() => new Map((papers.data ?? []).map((p) => [p.n, p])), [papers.data]);
+  const kept = useMemo(() => (papers.data ?? []).filter((p) => p.status === "kept"), [papers.data]);
 
   if (session.isLoading) return <PageLoading />;
   if (session.error || !session.data) return <ErrorNote error={session.error} />;
@@ -115,14 +118,14 @@ export default function SessionLayout() {
 
   const pinned = (gaps.data ?? []).filter((g) => g.pinned).length;
   const tabs = [
-    { to: "papers", label: "Papers", count: papers.data?.length ?? s.paper_count },
+    { to: "papers", label: "Papers", count: papers.data ? kept.length : s.paper_count },
     { to: "themes", label: "Themes", count: s.theme_count },
     { to: "gaps", label: "Gaps", count: gaps.data?.length ?? s.gap_count },
     { to: "chat", label: "Ask" },
     { to: "write", label: "Write" },
     ...(s.can_manage ? [{ to: "share", label: "Share" }] : []),
   ];
-  const ctx: SessionCtx = { sid, session: s, papers: papers.data ?? [], paperMap, running, runAnalysis };
+  const ctx: SessionCtx = { sid, session: s, papers: papers.data ?? [], kept, paperMap, running, runAnalysis };
 
   return (
     <div className="flex flex-col gap-5">
@@ -132,7 +135,7 @@ export default function SessionLayout() {
           <h1 className="h-serif text-[28px] leading-tight md:text-[32px]">{s.title}</h1>
           {s.topic && s.topic !== s.title && <p className="text-ink-muted">{s.topic}</p>}
           <div className="flex flex-wrap gap-1.5">
-            <span className="chip">{papers.data?.length ?? s.paper_count} papers</span>
+            <span className="chip">{papers.data ? kept.length : s.paper_count} papers</span>
             {s.discovery?.domain && <span className="chip">{s.discovery.domain}</span>}
             {pinned > 0 && <span className="chip chip-amber">{pinned} pinned gap{pinned === 1 ? "" : "s"}</span>}
             {s.role !== "owner" && <span className="chip chip-blue">You are a {s.role}</span>}

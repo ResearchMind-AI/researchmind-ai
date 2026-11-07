@@ -25,19 +25,31 @@ from app.services.vector_store import VectorStoreService
 logger = logging.getLogger(__name__)
 
 
-def list_session_papers(db: DBSession, session_id: int) -> List[Paper]:
-    """Session papers in a stable order: most relevant first, then by date added."""
-    rows = (db.query(Paper, SessionPaper)
-            .join(SessionPaper, SessionPaper.paper_id == Paper.id)
-            .filter(SessionPaper.session_id == session_id)
-            .order_by(SessionPaper.relevance_score.desc().nullslast(), SessionPaper.id)
-            .all())
-    return [p for p, _ in rows]
+def list_session_papers(db: DBSession, session_id: int, include_removed: bool = False) -> List[Paper]:
+    """Session papers in citation-number order. Removed papers are left out unless asked for,
+    so themes, gaps, chat and the writing guide only ever see the papers the researcher kept."""
+    q = (db.query(Paper, SessionPaper)
+         .join(SessionPaper, SessionPaper.paper_id == Paper.id)
+         .filter(SessionPaper.session_id == session_id))
+    if not include_removed:
+        q = q.filter(SessionPaper.status == "kept")
+    rows = q.order_by(SessionPaper.ref_no.asc().nullslast(), SessionPaper.id).all()
+    out = []
+    for p, sp in rows:
+        # Per-session details ride along on the (shared) Paper object for this request.
+        p.session_ref = sp.ref_no
+        p.session_link = sp
+        out.append(p)
+    return out
 
 
 def reference_numbers(papers: List[Paper]) -> Dict[int, int]:
-    """paper_id -> reference number [n] used consistently across the UI and exports."""
-    return {p.id: i + 1 for i, p in enumerate(papers)}
+    """paper_id -> the paper's fixed citation number [n] in this session."""
+    return {p.id: (getattr(p, "session_ref", None) or i + 1) for i, p in enumerate(papers)}
+
+
+def key_paper_ids(papers: List[Paper]) -> set:
+    return {p.id for p in papers if getattr(getattr(p, "session_link", None), "is_key", False)}
 
 
 def _year(p: Paper) -> Optional[int]:

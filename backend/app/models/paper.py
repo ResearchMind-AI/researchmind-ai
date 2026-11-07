@@ -4,7 +4,7 @@ Paper models for research document management
 import enum
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum as SQLEnum, JSON, Boolean
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, false
 from app.core.database import Base
 
 
@@ -80,10 +80,21 @@ class SessionPaper(Base):
     # Relevance score (optional, for AI-suggested papers)
     relevance_score = Column(Integer, nullable=True)  # 1-5 scale
 
+    # Fixed citation number [n] in this session. Assigned once, never reused,
+    # so citations in the researcher's writing always point at the same paper.
+    ref_no = Column(Integer, nullable=True)
+
+    # Triage: "kept" papers feed themes, gaps, chat and writing; "removed" ones don't.
+    status = Column(String(16), nullable=False, default="kept", server_default="kept")
+    is_key = Column(Boolean, nullable=False, default=False, server_default=false())
+    removed_reason = Column(String(64), nullable=True)
+    status_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status_at = Column(DateTime(timezone=True), nullable=True)
+
     # Timestamps
     added_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     session = relationship("Session", back_populates="session_papers")
     paper = relationship("Paper", back_populates="session_papers")
-    added_by = relationship("User")
+    added_by = relationship("User", foreign_keys=[added_by_user_id])

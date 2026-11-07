@@ -5,7 +5,7 @@ import { CitedText, Empty, ErrorNote, PageLoading, RefBadges, Spinner, useToast 
 import { useSession } from "./SessionLayout";
 
 export default function ThemesView() {
-  const { sid, session, papers, paperMap, running } = useSession();
+  const { sid, session, papers, kept, paperMap, running } = useSession();
   const qc = useQueryClient();
   const toast = useToast();
   const analysis = useQuery({ queryKey: ["analysis", sid], queryFn: () => api.analysis(sid) });
@@ -43,7 +43,7 @@ export default function ThemesView() {
     <div className="flex flex-col gap-5">
       <section className="flex flex-col gap-3 rounded-card bg-navy p-6 text-navy-text">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-navy-muted">Overview · {themes.length} themes across {papers.length} papers</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-navy-muted">Overview · {themes.length} themes across {kept.length} kept papers</div>
           {session.can_edit && <button className="btn btn-sm border-navy-line bg-transparent text-white hover:bg-navy-2" onClick={() => regen.mutate()} disabled={regen.isPending || running}>
             {regen.isPending ? <Spinner /> : <RefreshCw size={14} aria-hidden="true" />}Regenerate
           </button>}

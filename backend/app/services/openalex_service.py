@@ -132,6 +132,16 @@ class OpenAlexService:
         except Exception:
             return None
 
+    async def get_by_doi(self, doi: str) -> Optional[PaperSearchResult]:
+        """One work by DOI (used for "Add by DOI"). None if OpenAlex doesn't know it."""
+        try:
+            work = await fetch(self.name, f"{OPENALEX_API_URL}/https://doi.org/{doi}",
+                               params=self._base_params(), rate_per_sec=settings.OPENALEX_RATE_LIMIT)
+        except Exception as e:
+            logger.info(f"OpenAlex has no work for DOI {doi}: {e}")
+            return None
+        return self._parse_openalex_work(work) if work else None
+
     async def get_paper_details(self, openalex_id: str) -> Optional[dict]:
         try:
             return await fetch(self.name, f"{OPENALEX_API_URL}/{openalex_id}",

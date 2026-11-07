@@ -1,7 +1,7 @@
 // Small typed client for the FastAPI backend. Auth is an httpOnly cookie, so
 // requests just include credentials; no token handling in the browser.
 import type {
-  AppConfig, ChatMessage, Citation, Discovery, Example, Gap, Member, Paper, Section, SessionInfo,
+  AppConfig, ChatMessage, Citation, Discovery, Example, Gap, Member, Paper, Screening, Section, SessionInfo,
   SourceStatus, Themes, User, Writing, Feedback,
 } from "./types";
 
@@ -48,14 +48,18 @@ export const api = {
   sources: () => request<SourceStatus[]>("GET", `${R}/sources`),
   sessions: () => request<SessionInfo[]>("GET", `${R}/sessions`),
   createSession: (topic: string, title?: string) => request<SessionInfo>("POST", `${R}/sessions`, { topic, title }),
-  session: (id: number) => request<SessionInfo & { discovery: Discovery | null }>("GET", S(id)),
+  session: (id: number) => request<SessionInfo & { discovery: Discovery | null; screening: Screening }>("GET", S(id)),
   deleteSession: (id: number) => request<void>("DELETE", S(id)),
   papers: (id: number) => request<Paper[]>("GET", `${S(id)}/papers`),
-  upload: (id: number, file: File) => {
+  upload: (id: number, file: File, attachTo?: number) => {
     const fd = new FormData();
     fd.append("file", file);
-    return request<{ paper_id: number; title: string }>("POST", `${S(id)}/upload`, fd);
+    const q = attachTo ? `?attach_to=${attachTo}` : "";
+    return request<{ paper_id: number; title: string; attached: boolean }>("POST", `${S(id)}/upload${q}`, fd);
   },
+  updatePaper: (id: number, paperId: number, patch: Partial<Pick<Paper, "status" | "is_key" | "notes" | "removed_reason">>) =>
+    request<Paper>("PATCH", `${S(id)}/papers/${paperId}`, patch),
+  addByDoi: (id: number, doi: string) => request<Paper>("POST", `${S(id)}/papers/doi`, { doi }),
   analysis: (id: number) => request<{ discovery: Discovery | null; analysis: Themes | null }>("GET", `${S(id)}/analysis`),
   regenerateThemes: (id: number) => request<Themes>("POST", `${S(id)}/themes`),
 
