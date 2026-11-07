@@ -6,10 +6,9 @@ the Papers tab and the exported bibliography). After the answer is generated,
 any [n] that does not point to a retrieved source is removed, so the model
 cannot cite papers it was not shown.
 """
-import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Dict, Iterator, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from sqlalchemy.orm import Session as DBSession
 
@@ -137,17 +136,3 @@ async def answer_question(db: DBSession, session_id: int, user_id: int, question
     ctx = await build_context(db, session_id, question, gap=gap)
     parts = [p async for p in stream_answer(ctx)]
     return save_exchange(db, session_id, user_id, ctx, "".join(parts))
-
-
-def iter_sync(agen: AsyncIterator[str], loop: Optional[asyncio.AbstractEventLoop] = None) -> Iterator[str]:
-    """Iterate an async generator from synchronous code (used by Streamlit's write_stream)."""
-    loop = loop or asyncio.new_event_loop()
-    try:
-        while True:
-            try:
-                yield loop.run_until_complete(agen.__anext__())
-            except StopAsyncIteration:
-                break
-    finally:
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()

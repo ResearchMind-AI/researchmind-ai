@@ -2,7 +2,7 @@
 FastAPI dependencies for authentication and authorization
 """
 from typing import Generator, Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -12,12 +12,16 @@ from app.models.user import User
 from app.schemas.user import TokenData
 
 # OAuth2 scheme for token authentication
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+# The web app authenticates with an httpOnly cookie; API clients use a Bearer token.
+AUTH_COOKIE = "rm_token"
 
 
 def get_current_user(
+    request: Request,
     db: Session = Depends(get_db),
-    token: str = Depends(oauth2_scheme)
+    token: Optional[str] = Depends(oauth2_scheme)
 ) -> User:
     """
     Dependency to get the current authenticated user
@@ -38,7 +42,9 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Decode token
+    token = token or request.cookies.get(AUTH_COOKIE)
+    if not token:
+        raise credentials_exception
     email = decode_access_token(token)
     if email is None:
         raise credentials_exception

@@ -1,7 +1,8 @@
 # Deploying the ResearchMind AI POC
 
-The POC is one Docker image plus PostgreSQL. The image runs the Streamlit UI
-when `APP_MODE=ui` and the FastAPI API otherwise, on `$PORT` if the platform sets it.
+The POC is one Docker image plus PostgreSQL. The image (built from the repo-root
+`Dockerfile`) contains the FastAPI API and the React web app, served together on
+one port (`$PORT` if the platform sets it): the app at `/`, the API at `/api`.
 All state (papers, embeddings, chat, analysis, uploads) lives in Postgres, so
 there are no other volumes or services to manage.
 
@@ -18,14 +19,13 @@ Railway builds the Dockerfile straight from GitHub and redeploys on every push.
    `ResearchMind-AI/researchmind-ai` (allow Railway's GitHub app to see the organisation if asked).
 2. Open the new service → **Settings**:
    - **Source → Branch:** `poc` (switch to `master` once merged)
-   - **Source → Root Directory:** `/backend` (where the Dockerfile is)
+   - **Source → Root Directory:** `/` (the repo root, where the Dockerfile is)
 
 **2. Add the database**
 In the project canvas: **+ New → Database → PostgreSQL**.
 
 **3. Set variables** on the app service (**Variables → Raw Editor**, paste and fill in):
 ```
-APP_MODE=ui
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 SECRET_KEY=<long random string>
 INVITE_CODE=<code your testers will need>
@@ -44,14 +44,11 @@ Railway's reference to the database's private address. Generate `SECRET_KEY` wit
 
 **4. Get the link**
 Service → **Settings → Networking → Generate Domain**. Railway passes the port
-in `PORT`, which the image uses automatically. Optionally set
-**Deploy → Healthcheck Path** to `/_stcore/health`.
+in `PORT`, which the image uses automatically. Set
+**Deploy → Healthcheck Path** to `/health`.
 
 Open the `….up.railway.app` link, create your account (with the invite code),
 and send testers the link + invite code. Tables are created on first start.
-
-**Optional:** add the REST API as a second service from the same repo
-(Root Directory `/backend`, `APP_MODE=api`, same variables, healthcheck `/health`).
 
 **Keeping costs down:** in **Workspace → Usage** set a usage limit, and turn on
 the service's sleep-when-idle option if testers only use it occasionally
@@ -81,7 +78,7 @@ They create an account, then you can share sessions with them from the **Share**
 Always set `INVITE_CODE` before sharing a public link, otherwise anyone who finds
 the link can sign up and use your OpenAI credit.
 
-- Local URLs: UI http://localhost:8501 · API docs http://localhost:8000/api/docs
+- Local URLs: app http://localhost:8000 · API docs http://localhost:8000/api/docs
 - The link works while your computer is on and changes if the tunnel restarts.
 - Stop: `docker compose --profile share down` (data is kept in the `pgdata` volume).
 
@@ -101,8 +98,8 @@ instance and RDS Postgres; GitHub Actions builds the image and deploys it.
 **Deploy**
 - Automatic on every push to `master`, or run **Build and Deploy** manually from the
   Actions tab and pick the `poc` branch to deploy it before merging.
-- The workflow creates/updates database tables, starts nginx + API + UI, and checks `/health`.
-- Open `http://<EC2_IP>/` for the UI, `/api/docs` for the API.
+- The workflow creates/updates database tables, starts nginx + the app, and checks `/health`.
+- Open `http://<EC2_IP>/` for the app, `/api/docs` for the API.
 
 Notes: the default region is `us-east-1`; for testers in Australia,
 `ap-southeast-2` (Sydney) is faster (change `aws_region` and `availability_zones`).
@@ -118,14 +115,22 @@ python -m venv .venv && .venv\Scripts\activate      # macOS/Linux: source .venv/
 pip install -r requirements.txt
 copy .env.example .env                               # set OPENAI_API_KEY; for no Postgres use:
                                                      # DATABASE_URL=sqlite:///./researchmind.db
-streamlit run ui/app.py                              # UI  -> http://localhost:8501
 uvicorn app.main:app --reload                        # API -> http://localhost:8000/api/docs
-pytest                                               # 19 tests, no network or keys needed
+pytest                                               # no network or keys needed
+
+# in a second terminal (Node 20+)
+cd frontend
+npm install
+npm run dev                                          # app -> http://localhost:5173 (proxies /api to :8000)
 ```
+
+`npm run build` writes `frontend/dist`, which the API then serves at http://localhost:8000.
+End-to-end check (needs Playwright): start the API with `OFFLINE_DEMO=true`, then
+`BASE=http://localhost:8000 node e2e/walkthrough.mjs` from `frontend/`.
 
 ## Checking which mode each source is in
 
-The sidebar (**Paper sources & AI**) and `GET /health` show each source as
+The sidebar (**Paper sources**) and `GET /health` show each source as
 `full` or `limited`. Add a key to `.env`, restart, and it switches to full.
 
 | Source | Without key | With free key |

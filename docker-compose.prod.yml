@@ -10,7 +10,6 @@ services:
       - letsencrypt:/etc/letsencrypt
     depends_on:
       - backend
-      - ui
     restart: unless-stopped
     networks:
       - researchmind
@@ -32,28 +31,6 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 3
-
-  # ── POC UI (Streamlit) — same image as the backend, different command ────────
-  ui:
-    image: ${BACKEND_IMAGE:-researchmind-backend:latest}
-    command: ["streamlit", "run", "ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
-    env_file: .env
-    restart: unless-stopped
-    networks:
-      - researchmind
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-
-  # ── Frontend (uncomment when frontend/ is built) ─────────────────────────────
-  # frontend:
-  #   image: ${FRONTEND_IMAGE:-researchmind-frontend:latest}
-  #   restart: unless-stopped
-  #   networks:
-  #     - researchmind
 
   redis:
     image: redis:7-alpine

@@ -1,16 +1,18 @@
 """
 Research POC endpoints: discovery, themes, gaps, chat, upload, export, sharing.
-The Streamlit UI calls the same services directly; these expose them over HTTP.
+The React web app (frontend/) uses these endpoints.
 """
+import asyncio
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
 from app.api.deps import get_current_active_user
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.research import SessionMessage
 from app.models.session import Session
 from app.models.user import User
@@ -119,10 +121,12 @@ async def chat(session_id: int, req: ChatRequest, current_user: User = Depends(g
 
 
 @router.get("/sessions/{session_id}/messages")
-def messages(session_id: int, current_user: User = Depends(get_current_active_user),
-             db: DBSession = Depends(get_db)):
+def messages(session_id: int, gap_id: Optional[int] = None,
+             current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
     s = _session(db, session_id, current_user)
-    rows = db.query(SessionMessage).filter(SessionMessage.session_id == s.id).order_by(SessionMessage.id).all()
+    thread = SessionMessage.gap_id.is_(None) if gap_id is None else SessionMessage.gap_id == gap_id
+    rows = (db.query(SessionMessage).filter(SessionMessage.session_id == s.id, thread)
+            .order_by(SessionMessage.id).all())
     return [{"role": m.role, "content": m.content, "citations": m.citations,
              "created_at": m.created_at} for m in rows]
 
@@ -286,3 +290,247 @@ def export_writing(session_id: int, style: str = "APA", format: str = "docx",
              if format == "docx" else "application/pdf")
     return Response(data, media_type=media, headers={
         "Content-Disposition": f'attachment; filename="literature-review-{s.id}.{format}"'})
+
+
+# ── Web app: sessions, papers, members, streaming ────────────────────────────
+
+class SessionCreateBody(BaseModel):
+    topic: str = Field(..., min_length=5, max_length=2000)
+    title: Optional[str] = Field(None, max_length=120)
+
+
+class TitleBody(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+
+
+class SectionCreate(BaseModel):
+    heading: str = Field(..., min_length=1, max_length=300)
+
+
+class MoveBody(BaseModel):
+    direction: int = Field(..., ge=-1, le=1)
+
+
+def _session_out(db: DBSession, s: Session, user: User) -> dict:
+    from app.models.paper import SessionPaper
+    from app.models.research import Gap
+    role = access.role_of(db, s, user)
+    analysis = get_artifact(db, s.id, "analysis") or {}
+    return {"id": s.id, "title": s.title, "topic": s.topic, "role": role,
+            "can_edit": access.can_edit(db, s, user), "can_manage": access.can_manage(db, s, user),
+            "paper_count": db.query(SessionPaper).filter(SessionPaper.session_id == s.id).count(),
+            "theme_count": len(analysis.get("themes") or []),
+            "gap_count": db.query(Gap).filter(Gap.session_id == s.id).count(),
+            "created_at": s.created_at, "updated_at": s.updated_at}
+
+
+@router.get("/sessions")
+def my_sessions(current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    return [_session_out(db, s, current_user) for s in access.list_user_sessions(db, current_user)]
+
+
+@router.post("/sessions", status_code=201)
+def create_session(body: SessionCreateBody, current_user: User = Depends(get_current_active_user),
+                   db: DBSession = Depends(get_db)):
+    topic = body.topic.strip()
+    s = Session(title=(body.title or topic)[:120], topic=topic, creator_id=current_user.id)
+    db.add(s)
+    db.commit()
+    return _session_out(db, s, current_user)
+
+
+@router.get("/sessions/{session_id}")
+def session_detail(session_id: int, current_user: User = Depends(get_current_active_user),
+                   db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    out = _session_out(db, s, current_user)
+    out["discovery"] = get_artifact(db, s.id, "discovery")
+    return out
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def delete_session(session_id: int, current_user: User = Depends(get_current_active_user),
+                   db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    if s.creator_id != current_user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can delete a session")
+    db.delete(s)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/sessions/{session_id}/papers")
+def session_papers(session_id: int, current_user: User = Depends(get_current_active_user),
+                   db: DBSession = Depends(get_db)):
+    from app.services.analysis_service import list_session_papers, reference_numbers
+    s = _session(db, session_id, current_user)
+    papers = list_session_papers(db, s.id)
+    refs = reference_numbers(papers)
+    return [{"id": p.id, "n": refs[p.id], "title": p.title, "authors": p.authors or [],
+             "year": p.publication_date.year if p.publication_date else None, "journal": p.journal,
+             "doi": p.doi, "url": p.url or (f"https://doi.org/{p.doi}" if p.doi else None),
+             "abstract": p.abstract, "citations": p.citations_count or 0,
+             "found_in": (p.extra_metadata or {}).get("found_in") or [p.source.value],
+             "uploaded": bool((p.extra_metadata or {}).get("uploaded"))} for p in papers]
+
+
+@router.get("/sessions/{session_id}/members")
+def members(session_id: int, current_user: User = Depends(get_current_active_user),
+            db: DBSession = Depends(get_db)):
+    from app.models.session import SessionMember
+    s = _session(db, session_id, current_user)
+    owner = db.get(User, s.creator_id)
+    out = [{"user_id": owner.id, "email": owner.email, "full_name": owner.full_name, "role": "owner"}]
+    for m in db.query(SessionMember).filter(SessionMember.session_id == s.id).all():
+        u = db.get(User, m.user_id)
+        out.append({"user_id": u.id, "email": u.email, "full_name": u.full_name, "role": m.role.value})
+    return out
+
+
+@router.delete("/sessions/{session_id}/members/{user_id}", status_code=204)
+def remove_member(session_id: int, user_id: int, current_user: User = Depends(get_current_active_user),
+                  db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user)
+    try:
+        access.unshare_session(db, s, current_user, user_id)
+    except access.AccessError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e))
+    return Response(status_code=204)
+
+
+@router.delete("/sessions/{session_id}/gaps/{gap_id}", status_code=204)
+def delete_gap(session_id: int, gap_id: int, current_user: User = Depends(get_current_active_user),
+               db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    gs.delete_gap(db, _gap(db, s, gap_id))
+    return Response(status_code=204)
+
+
+@router.post("/sessions/{session_id}/writing/sections", status_code=201)
+def add_section(session_id: int, body: SectionCreate, current_user: User = Depends(get_current_active_user),
+                db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    try:
+        return _section_out(ws.add_section(db, s.id, body.heading))
+    except ws.WritingError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+
+@router.delete("/sessions/{session_id}/writing/sections/{section_id}", status_code=204)
+def delete_section(session_id: int, section_id: int, current_user: User = Depends(get_current_active_user),
+                   db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    ws.delete_section(db, _section(db, s, section_id))
+    return Response(status_code=204)
+
+
+@router.post("/sessions/{session_id}/writing/sections/{section_id}/move")
+def move_section(session_id: int, section_id: int, body: MoveBody,
+                 current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    ws.move_section(db, _section(db, s, section_id), body.direction)
+    return [_section_out(x) for x in ws.list_sections(db, s.id)]
+
+
+@router.put("/sessions/{session_id}/writing/title")
+def set_title(session_id: int, body: TitleBody, current_user: User = Depends(get_current_active_user),
+              db: DBSession = Depends(get_db)):
+    s = _session(db, session_id, current_user, edit=True)
+    ws.set_title(db, s.id, body.title)
+    return {"title": body.title.strip()}
+
+
+@router.get("/sessions/{session_id}/writing/example")
+def get_example(session_id: int, style: str = "APA", current_user: User = Depends(get_current_active_user),
+                db: DBSession = Depends(get_db)):
+    from app.services.analysis_service import list_session_papers
+    from app.services.export_service import format_review
+    s = _session(db, session_id, current_user)
+    review = get_artifact(db, s.id, "lit_review")
+    return format_review(review, list_session_papers(db, s.id), style) if review else None
+
+
+@router.post("/sessions/{session_id}/writing/example")
+async def make_example(session_id: int, current_user: User = Depends(get_current_active_user),
+                       db: DBSession = Depends(get_db)):
+    from app.services.analysis_service import list_session_papers
+    from app.services.export_service import format_review
+    s = _session(db, session_id, current_user, edit=True)
+    review = await draft_review(db, s.id, s.topic or s.title)
+    return format_review(review, list_session_papers(db, s.id), "APA")
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, default=str)}\n\n"
+
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@router.post("/sessions/{session_id}/analyse/stream")
+async def analyse_stream(session_id: int, req: DiscoverRequest,
+                         current_user: User = Depends(get_current_active_user), db: DBSession = Depends(get_db)):
+    """Find papers, then themes, then gaps, streaming progress as server-sent events."""
+    s = _session(db, session_id, current_user, edit=True)
+    sid, uid, topic = s.id, current_user.id, req.topic or s.topic or s.title
+
+    async def events():
+        queue: asyncio.Queue = asyncio.Queue()
+        say = lambda m: queue.put_nowait({"type": "progress", "message": m})  # noqa: E731
+
+        async def job():
+            jdb = SessionLocal()
+            try:
+                stats = await discover_papers(jdb, sid, uid, topic, req.start_year, req.end_year,
+                                              req.max_papers, progress=say)
+                if stats.get("error"):
+                    queue.put_nowait({"type": "error", "message": stats["error"]})
+                    return
+                say("Finding themes…")
+                await generate_themes(jdb, sid, topic)
+                say("Looking for research gaps…")
+                await generate_gaps(jdb, sid, topic)
+                queue.put_nowait({"type": "done", "stats": stats})
+            except Exception as e:  # surface failures to the UI instead of hanging
+                queue.put_nowait({"type": "error", "message": f"Analysis failed: {e}"})
+            finally:
+                jdb.close()
+
+        task = asyncio.create_task(job())
+        while True:
+            item = await queue.get()
+            yield _sse(item)
+            if item["type"] in ("done", "error"):
+                break
+        await task
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+@router.post("/sessions/{session_id}/chat/stream")
+async def chat_stream(session_id: int, req: ChatRequest, current_user: User = Depends(get_current_active_user),
+                      db: DBSession = Depends(get_db)):
+    """Stream an answer token by token, then the citation-checked final answer."""
+    from app.services.chat_service import build_context, save_exchange, stream_answer
+    s = _session(db, session_id, current_user, edit=True)
+    if req.gap_id:
+        _gap(db, s, req.gap_id)
+    sid, uid, gap_id, question = s.id, current_user.id, req.gap_id, req.question
+
+    async def events():
+        cdb = SessionLocal()
+        try:
+            gap = gs.get_gap(cdb, gap_id) if gap_id else None
+            ctx = await build_context(cdb, sid, question, gap=gap)
+            parts = []
+            async for piece in stream_answer(ctx):
+                parts.append(piece)
+                yield _sse({"type": "token", "text": piece})
+            result = save_exchange(cdb, sid, uid, ctx, "".join(parts))
+            yield _sse({"type": "done", **result})
+        except Exception as e:
+            yield _sse({"type": "error", "message": f"Chat failed: {e}"})
+        finally:
+            cdb.close()
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)

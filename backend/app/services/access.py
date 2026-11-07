@@ -1,5 +1,5 @@
 """
-Session access rules, shared by the API and the Streamlit UI.
+Session access rules, used by the API.
 
 - Owner (creator), lead, contributor: can edit (run discovery, upload, analyse,
   chat, export).

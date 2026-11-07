@@ -1,11 +1,11 @@
 # ResearchMind AI — run the whole POC on any machine with Docker.
 #
 #   1. cp backend/.env.example backend/.env   (add OPENAI_API_KEY at minimum)
-#   2. docker compose up -d --build            -> http://localhost:8501
+#   2. docker compose up -d --build            -> http://localhost:8000
 #   3. To share it for testing:  docker compose --profile share up -d
 #      then: docker compose logs tunnel | grep trycloudflare.com   (public https link)
 #
-# API docs: http://localhost:8000/api/docs
+# API docs: http://localhost:8000/api/docs  (frontend dev server: cd frontend && npm run dev)
 
 services:
   db:
@@ -24,7 +24,7 @@ services:
     restart: unless-stopped
 
   api:
-    build: ./backend
+    build: .
     image: researchmind-backend:latest
     env_file: ./backend/.env
     environment:
@@ -36,26 +36,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  ui:
-    image: researchmind-backend:latest
-    command: ["streamlit", "run", "ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
-    env_file: ./backend/.env
-    environment:
-      DATABASE_URL: postgresql://researchmind:devpassword@db:5432/researchmind_db
-    ports:
-      - "8501:8501"
-    depends_on:
-      api:
-        condition: service_started
-    restart: unless-stopped
-
   # Free public HTTPS link for testers (Cloudflare quick tunnel, no account needed).
   # The link changes each time the tunnel restarts.
   tunnel:
     image: cloudflare/cloudflared:latest
-    command: ["tunnel", "--no-autoupdate", "--url", "http://ui:8501"]
+    command: ["tunnel", "--no-autoupdate", "--url", "http://api:8000"]
     depends_on:
-      - ui
+      - api
     profiles: ["share"]
     restart: unless-stopped
 

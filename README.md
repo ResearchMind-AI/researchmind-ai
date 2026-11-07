@@ -6,13 +6,14 @@ AI-powered research collaboration platform for automated literature reviews.
 
 Type a research topic and get, in about two minutes: relevant papers from
 OpenAlex, Semantic Scholar, PubMed and arXiv; the main themes; research gaps;
-a chat that answers with citations; and a literature review (DOCX/PDF, APA or IEEE).
+a chat that answers with citations; a gaps workspace (pin, check novelty, discuss);
+and a writing guide for the literature review you write yourself (DOCX/PDF, APA or IEEE).
 You can also upload your own PDFs, save and reopen sessions, and share them as
 viewer or contributor.
 
 ```bash
 cp backend/.env.example backend/.env   # add OPENAI_API_KEY (+ optional keys)
-docker compose up -d --build           # UI http://localhost:8501 · API http://localhost:8000/api/docs
+docker compose up -d --build           # app http://localhost:8000 · API http://localhost:8000/api/docs
 docker compose --profile share up -d   # + public test link (see DEPLOY.md)
 ```
 
@@ -28,7 +29,8 @@ See **[DEPLOY.md](DEPLOY.md)** for deploying on Railway (recommended), sharing a
 | PDF/DOCX upload | `backend/app/services/upload_service.py` |
 | Literature review export | `backend/app/services/export_service.py` |
 | Sharing and permissions | `backend/app/services/access.py` |
-| UI | `backend/ui/app.py` |
+| Web app (React + TypeScript) | `frontend/src/` (pages in `frontend/src/pages/`) |
+| Gaps workspace, writing guide | `gaps_service.py`, `writing_service.py` |
 | API | `backend/app/api/v1/research.py` (+ existing auth/sessions/papers/knowledge-map) |
 | Tests (offline, no keys) | `backend/tests/` → `cd backend && pytest` |
 
@@ -55,11 +57,10 @@ in the request (no Celery yet).
 - Redis 7+ and Celery (planned for background jobs)
 
 **Frontend:**
-- POC: Streamlit (`backend/ui/app.py`)
-- Planned: React 18+ with TypeScript
-- Vite
-- shadcn/ui + Tailwind CSS
-- TanStack Query + Zustand
+- React 18 + TypeScript, Vite
+- Tailwind CSS, lucide icons
+- TanStack Query, React Router
+- Served by FastAPI from the same image (cookie auth, streamed answers over SSE)
 
 **AI:**
 - Claude (when ANTHROPIC_API_KEY is set) or OpenAI gpt-4o-mini for analysis and chat
