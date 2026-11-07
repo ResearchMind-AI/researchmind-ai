@@ -89,7 +89,9 @@ def test_session_pipeline_offline(db):
 
     from app.models.research import PaperChunk
     chunks = db.query(PaperChunk).filter(PaperChunk.paper_id == with_text[0]["id"]).all()
-    assert any("(p. 2)" in c.text for c in chunks)
+    assert any(c.text.startswith("(p. 2)") for c in chunks)
+    # every passage after the title/abstract says which page it's from
+    assert all(c.text.startswith("(p. ") for c in chunks if not c.text.startswith("Title:"))
 
     # nothing is retried automatically; retry=true tries the rest again
     ev = events(owner.post(f"{base}/fulltext/stream"))
@@ -102,3 +104,21 @@ def test_session_pipeline_offline(db):
     owner.patch(f"{base}/papers/{no_text['id']}", json={"status": "removed"})
     ev = events(owner.post(f"{base}/fulltext/stream", params={"retry": "true"}))
     assert ev[-1]["tried"] == len(papers) - len(with_text) - 1 and ev[-1]["kept"] == len(papers) - 1
+
+
+def test_older_full_texts_are_refetched_once_with_page_markers(db):
+    owner = client_for("ft2@x.com")
+    s = owner.post("/api/v1/research/sessions", json={"topic": "LLMs for clinical decision support"}).json()
+    base = f"/api/v1/research/sessions/{s['id']}"
+    events(owner.post(f"{base}/analyse/stream", json={"max_papers": 6}))
+    from app.models.paper import Paper
+    p = next(x for x in db.query(Paper).all() if x.full_text)
+    extra = dict(p.extra_metadata)
+    extra.pop("paged_v2")          # as stored before this change
+    p.extra_metadata = extra
+    db.commit()
+    ev = events(owner.post(f"{base}/fulltext/stream"))
+    assert ev[-1]["tried"] == 1 and ev[-1]["found"] == 1
+    db.expire_all()
+    assert db.get(Paper, p.id).extra_metadata.get("paged_v2") and "\f" in db.get(Paper, p.id).full_text
+    assert events(owner.post(f"{base}/fulltext/stream"))[-1]["tried"] == 0

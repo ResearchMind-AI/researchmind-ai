@@ -29,7 +29,8 @@ MAX_PAGES = 60
 DOWNLOAD_TIMEOUT = 30.0
 CONCURRENCY = 4
 MAX_PER_RUN = 40
-MIN_TEXT = 1500  # characters; less than this is probably a scanned PDF or a landing page
+MIN_TEXT = 1500
+MAX_CHUNKS = 160  # passages per paper (a 60-page paper fits)  # characters; less than this is probably a scanned PDF or a landing page
 
 REFS_RE = re.compile(r"^\s*(references|bibliography|literature cited|works cited)\s*:?\s*$", re.I | re.M)
 
@@ -134,10 +135,18 @@ def strip_references(pages: List[str]) -> List[str]:
     return pages
 
 
-def paged_document(p: Paper, pages: List[str]) -> str:
-    """One text with "(p. N)" markers so each embedded passage knows its page."""
-    body = "\n\n".join(f"(p. {i + 1}) {' '.join(t.split())}" for i, t in enumerate(pages) if t.strip())
-    return f"Title: {p.title}\n\nAbstract: {p.abstract or ''}\n\nFull Text: {body}"
+PAGE_SEP = "\f"  # pages are stored joined by form feeds, so page numbers survive
+
+
+def paged_chunks(p: Paper, pages: List[str], embedder) -> List[str]:
+    """Passages to embed: the title and abstract, then each page split into passages that
+    all start with their page marker, e.g. "(p. 7) ...", so any passage can be cited by page."""
+    out = embedder.chunk_text(f"Title: {p.title}\n\nAbstract: {p.abstract or ''}")
+    for i, text in enumerate(pages):
+        flat = " ".join(text.split())
+        if flat:
+            out.extend(f"(p. {i + 1}) {c}" for c in embedder.chunk_text(flat))
+    return out
 
 
 def _offline_pages(p: Paper) -> List[str]:
@@ -168,15 +177,19 @@ async def get_full_text(p: Paper) -> Tuple[str, List[str]]:
 async def fetch_full_texts(db: DBSession, session_id: int, progress: Optional[Callable[[str], None]] = None,
                            retry: bool = False) -> Dict:
     """Get full text for kept papers that don't have it yet. Returns counts."""
-    from app.services.upload_service import MAX_CHUNKS_PER_UPLOAD
     from app.services.embedding_service import EmbeddingService
     from app.services.vector_store import VectorStoreService
     say = progress or (lambda m: None)
     rows = (db.query(Paper).join(SessionPaper, SessionPaper.paper_id == Paper.id)
             .filter(SessionPaper.session_id == session_id, SessionPaper.status == "kept")
             .order_by(SessionPaper.is_key.desc(), SessionPaper.ref_no).all())
-    todo = [p for p in rows if not p.full_text and (retry or not (p.extra_metadata or {}).get("full_text_tried"))][:MAX_PER_RUN]
-    kept_with_text = sum(1 for p in rows if p.full_text)
+    def needs(p: Paper) -> bool:
+        extra = p.extra_metadata or {}
+        if p.full_text:  # fetched before every passage carried its page: fetch once more
+            return extra.get("full_text_source") in ("arxiv", "openalex", "unpaywall", "offline") and not extra.get("paged_v2")
+        return retry or not extra.get("full_text_tried")
+    todo = [p for p in rows if needs(p)][:MAX_PER_RUN]
+    kept_with_text = sum(1 for p in rows if p.full_text and p not in todo)
     if not todo:
         return {"tried": 0, "found": 0, "with_full_text": kept_with_text, "kept": len(rows)}
 
@@ -205,10 +218,10 @@ async def fetch_full_texts(db: DBSession, session_id: int, progress: Optional[Ca
         extra = dict(p.extra_metadata or {})
         extra["full_text_tried"] = True
         if pages:
-            p.full_text = "\n\n".join(pages)
-            extra.update({"full_text_source": src, "pages": len(pages)})
+            p.full_text = PAGE_SEP.join(pages)
+            extra.update({"full_text_source": src, "pages": len(pages), "paged_v2": True})
             extra.pop("full_text_error", None)
-            chunks = embedder.chunk_text(paged_document(p, pages))[:MAX_CHUNKS_PER_UPLOAD]
+            chunks = paged_chunks(p, pages, embedder)[:MAX_CHUNKS]
             vectors = await embedder.generate_embeddings_batch(chunks)
             await store.add_paper_embeddings(session_id, p.id, chunks, vectors)
             found += 1
