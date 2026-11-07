@@ -46,6 +46,21 @@ from app.schemas.paper import (
     SessionPaperResponse,
     PaperUploadResponse,
 )
+from app.schemas.knowledge_map import (
+    KnowledgeNodeBase,
+    KnowledgeNodeCreate,
+    KnowledgeNodeUpdate,
+    KnowledgeNodeResponse,
+    NodeRelationshipBase,
+    NodeRelationshipCreate,
+    NodeRelationshipUpdate,
+    NodeRelationshipResponse,
+    KnowledgeMapResponse,
+    KnowledgeMapGenerationRequest,
+    KnowledgeMapGenerationResponse,
+    NodeSearchRequest,
+    NodeSearchResponse,
+)
 
 __all__ = [
     # User schemas
@@ -89,4 +104,18 @@ __all__ = [
     "SessionPaperUpdate",
     "SessionPaperResponse",
     "PaperUploadResponse",
+    # Knowledge Map schemas
+    "KnowledgeNodeBase",
+    "KnowledgeNodeCreate",
+    "KnowledgeNodeUpdate",
+    "KnowledgeNodeResponse",
+    "NodeRelationshipBase",
+    "NodeRelationshipCreate",
+    "NodeRelationshipUpdate",
+    "NodeRelationshipResponse",
+    "KnowledgeMapResponse",
+    "KnowledgeMapGenerationRequest",
+    "KnowledgeMapGenerationResponse",
+    "NodeSearchRequest",
+    "NodeSearchResponse",
 ]

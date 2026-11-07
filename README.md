@@ -2,6 +2,43 @@
 
 AI-powered research collaboration platform for automated literature reviews.
 
+## POC (branch `poc`) — quick start
+
+Type a research topic and get, in about two minutes: relevant papers from
+OpenAlex, Semantic Scholar, PubMed and arXiv; the main themes; research gaps;
+a chat that answers with citations; a gaps workspace (pin, check novelty, discuss);
+and a writing guide for the literature review you write yourself (DOCX/PDF, APA or IEEE).
+You can also upload your own PDFs, save and reopen sessions, and share them as
+viewer or contributor.
+
+```bash
+cp backend/.env.example backend/.env   # add OPENAI_API_KEY (+ optional keys)
+docker compose up -d --build           # app http://localhost:8000 · API http://localhost:8000/api/docs
+docker compose --profile share up -d   # + public test link (see DEPLOY.md)
+```
+
+See **[DEPLOY.md](DEPLOY.md)** for deploying on Railway (recommended), sharing a test link from your own computer, AWS, and local dev.
+
+| Area | Where |
+|---|---|
+| Paper discovery (query planning, routing, dedupe, ranking) | `backend/app/services/discovery_service.py` |
+| Sources (free; keys optional) | `openalex_service.py`, `semantic_scholar_service.py`, `pubmed_service.py`, `arxiv_service.py` |
+| Retries, rate pacing, API cache | `backend/app/services/http_utils.py` |
+| Themes (k-means + LLM) and gaps | `backend/app/services/analysis_service.py` |
+| Chat with validated citations | `backend/app/services/chat_service.py` |
+| PDF/DOCX upload | `backend/app/services/upload_service.py` |
+| Literature review export | `backend/app/services/export_service.py` |
+| Sharing and permissions | `backend/app/services/access.py` |
+| Web app (React + TypeScript) | `frontend/src/` (pages in `frontend/src/pages/`) |
+| Gaps workspace, writing guide | `gaps_service.py`, `writing_service.py` |
+| API | `backend/app/api/v1/research.py` (+ existing auth/sessions/papers/knowledge-map) |
+| Tests (offline, no keys) | `backend/tests/` → `cd backend && pytest` |
+
+POC design notes: vectors are stored in Postgres (`paper_chunks`) and searched in
+numpy, replacing ChromaDB, so the only stateful service is Postgres. Claude is
+used for analysis when `ANTHROPIC_API_KEY` is set, otherwise OpenAI. Work runs
+in the request (no Celery yet).
+
 ## Features (V1)
 
 - 🔬 **Session Management** - Create research sessions with specific topics
@@ -16,21 +53,18 @@ AI-powered research collaboration platform for automated literature reviews.
 
 **Backend:**
 - FastAPI (Python 3.11+)
-- PostgreSQL 15+ with pgvector
-- Redis 7+
-- Celery for background tasks
-- Chroma for vector storage
+- PostgreSQL 15+ (also stores embeddings in the POC)
+- Redis 7+ and Celery (planned for background jobs)
 
 **Frontend:**
-- React 18+ with TypeScript
-- Vite
-- shadcn/ui + Tailwind CSS
-- TanStack Query + Zustand
+- React 18 + TypeScript, Vite
+- Tailwind CSS, lucide icons
+- TanStack Query, React Router
+- Served by FastAPI from the same image (cookie auth, streamed answers over SSE)
 
 **AI:**
-- OpenAI GPT-3.5-turbo
-- OpenAI text-embedding-3-small
-- LangChain for RAG
+- Claude (when ANTHROPIC_API_KEY is set) or OpenAI gpt-4o-mini for analysis and chat
+- OpenAI text-embedding-3-small for embeddings
 
 ## Prerequisites
 

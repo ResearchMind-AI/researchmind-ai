@@ -1,40 +1,30 @@
 """
-Database configuration and session management
-Uses SQLAlchemy 2.0 with async support
+Database configuration and session management (SQLAlchemy 2.0)
+Works with PostgreSQL (Docker/AWS RDS) and SQLite (quick local runs, tests).
 """
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
 from typing import Generator
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 from app.config import settings
 
-# Create database engine
+_is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using
-    echo=settings.DEBUG,  # Log SQL in debug mode
+    pool_pre_ping=True,
+    echo=False,
+    connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
 
-# Session factory
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base class for models
 Base = declarative_base()
 
 
 def get_db() -> Generator[Session, None, None]:
-    """
-    Dependency for getting database sessions
-    Usage in FastAPI endpoints:
-        @app.get("/items")
-        def read_items(db: Session = Depends(get_db)):
-            ...
-    """
+    """FastAPI dependency that yields a database session"""
     db = SessionLocal()
     try:
         yield db
@@ -43,8 +33,38 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db():
-    """Initialize database - create all tables"""
-    # Import all models here to ensure they're registered
-    from app.models import User, Team, TeamMember, Session
+    """Create all tables (idempotent)"""
+    import app.models  # noqa: F401  (registers all models)
+    from sqlalchemy import text
 
-    Base.metadata.create_all(bind=engine)
+    if engine.dialect.name != "postgresql":
+        Base.metadata.create_all(bind=engine)
+        _add_missing_columns()
+        return
+
+    # The UI and API may start at the same time against an empty database.
+    # A transaction-scoped advisory lock makes table creation run one at a time.
+    with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(7724831)"))
+        Base.metadata.create_all(bind=conn)
+        # Databases created before the POC have a "papersource" enum without ARXIV.
+        conn.execute(text("ALTER TYPE papersource ADD VALUE IF NOT EXISTS 'ARXIV'"))
+        # Columns added after the first deployment
+        for table, column, ddl in NEW_COLUMNS:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}"))
+
+
+# (table, column, type) added to existing tables after first release; create_all
+# only creates missing tables, so these are added explicitly and idempotently.
+NEW_COLUMNS = [
+    ("session_messages", "gap_id", "INTEGER"),
+]
+
+
+def _add_missing_columns():
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, column, ddl in NEW_COLUMNS:
+            if column not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))

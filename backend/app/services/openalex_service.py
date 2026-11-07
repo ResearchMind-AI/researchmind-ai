@@ -1,211 +1,142 @@
 """
-OpenAlex API integration service
-Uses OpenAlex API for searching academic papers
+OpenAlex API integration service (free).
+
+Without OPENALEX_API_KEY: about $0.10/day of free usage (~100 searches).
+With a free key: about $1/day (~1,000 searches), so we fetch more per query.
 """
-import httpx
 import logging
 from typing import List, Optional
-from datetime import datetime
 
-from app.schemas.paper import PaperSearchResult
+from app.config import settings
 from app.models.paper import PaperSource
+from app.schemas.paper import PaperSearchResult
+from app.services.http_utils import fetch
 
 logger = logging.getLogger(__name__)
 
 OPENALEX_API_URL = "https://api.openalex.org/works"
+SELECT_FIELDS = ("id,title,abstract_inverted_index,authorships,publication_date,"
+                 "primary_location,doi,cited_by_count")
 
 
 class OpenAlexService:
     """Service for interacting with OpenAlex API"""
 
-    def __init__(self):
-        self.timeout = 30.0
-        # OpenAlex recommends including email in User-Agent
-        self.headers = {
-            "User-Agent": "ResearchMindAI (mailto:support@researchmind.ai)"
-        }
+    name = "openalex"
+    label = "OpenAlex"
 
-    async def search_papers(
+    def __init__(self):
+        self.api_key = settings.OPENALEX_API_KEY
+
+    @property
+    def mode(self) -> str:
+        return "full" if self.api_key else "limited"
+
+    @property
+    def default_max_results(self) -> int:
+        return 50 if self.api_key else 20
+
+    def _base_params(self) -> dict:
+        params = {}
+        if self.api_key:
+            params["api_key"] = self.api_key
+        if settings.OPENALEX_EMAIL:
+            params["mailto"] = settings.OPENALEX_EMAIL
+        return params
+
+    async def search(
         self,
         query: str,
-        max_results: int = 20,
+        max_results: Optional[int] = None,
         start_year: Optional[int] = None,
-        end_year: Optional[int] = None
+        end_year: Optional[int] = None,
     ) -> List[PaperSearchResult]:
-        """
-        Search OpenAlex for papers matching the query
+        """Search OpenAlex; raises SourceUnavailable if the API keeps failing."""
+        filters = ["has_abstract:true"]
+        if start_year:
+            filters.append(f"from_publication_date:{start_year}-01-01")
+        if end_year:
+            filters.append(f"to_publication_date:{end_year}-12-31")
 
-        Args:
-            query: Search query
-            max_results: Maximum number of results to return
-            start_year: Filter by start year
-            end_year: Filter by end year
+        params = {
+            **self._base_params(),
+            "search": query,
+            "per-page": min(max_results or self.default_max_results, 100),
+            "select": SELECT_FIELDS,
+            "filter": ",".join(filters),
+        }
+        data = await fetch(self.name, OPENALEX_API_URL, params=params,
+                           rate_per_sec=settings.OPENALEX_RATE_LIMIT)
+        papers = [p for p in (self._parse_openalex_work(w) for w in data.get("results", [])) if p]
+        logger.info(f"OpenAlex ({self.mode}): {len(papers)} papers for '{query}'")
+        return papers
 
-        Returns:
-            List of paper search results
-        """
+    async def search_papers(self, query: str, max_results: int = 20,
+                            start_year: Optional[int] = None,
+                            end_year: Optional[int] = None) -> List[PaperSearchResult]:
+        """Backwards-compatible search used by the /papers/search endpoint (never raises)."""
         try:
-            # Build filter string
-            filters = []
-
-            # Add date filters
-            if start_year:
-                filters.append(f"from_publication_date:{start_year}-01-01")
-            if end_year:
-                filters.append(f"to_publication_date:{end_year}-12-31")
-
-            # Build params
-            params = {
-                "search": query,
-                "per-page": min(max_results, 100),  # OpenAlex max is 100
-                "sort": "relevance_score:desc",
-                "select": "id,title,abstract_inverted_index,authorships,publication_date,primary_location,doi,cited_by_count"
-            }
-
-            if filters:
-                params["filter"] = ",".join(filters)
-
-            async with httpx.AsyncClient(timeout=self.timeout, headers=self.headers) as client:
-                response = await client.get(OPENALEX_API_URL, params=params)
-                response.raise_for_status()
-
-                data = response.json()
-                results = data.get("results", [])
-
-                papers = []
-                for work in results:
-                    paper = self._parse_openalex_work(work)
-                    if paper:
-                        papers.append(paper)
-
-                logger.info(f"Found {len(papers)} papers from OpenAlex for query: {query}")
-                return papers
-
+            return await self.search(query, max_results, start_year, end_year)
         except Exception as e:
             logger.error(f"Error searching OpenAlex: {e}")
             return []
 
     def _parse_openalex_work(self, work: dict) -> Optional[PaperSearchResult]:
-        """
-        Parse OpenAlex work JSON into PaperSearchResult
-
-        Args:
-            work: OpenAlex work dictionary
-
-        Returns:
-            PaperSearchResult or None if parsing fails
-        """
         try:
-            # Extract OpenAlex ID
-            openalex_id = work.get("id", "").replace("https://openalex.org/", "")
-            if not openalex_id:
+            openalex_id = (work.get("id") or "").replace("https://openalex.org/", "")
+            if not openalex_id or not work.get("title"):
                 return None
 
-            # Title
-            title = work.get("title") or "No title"
+            authors = [a.get("author", {}).get("display_name")
+                       for a in work.get("authorships") or []]
+            authors = [a for a in authors if a]
 
-            # Abstract - reconstruct from inverted index
-            abstract = self._reconstruct_abstract(work.get("abstract_inverted_index"))
-
-            # Authors
-            authors = []
-            authorships = work.get("authorships", [])
-            for authorship in authorships:
-                author = authorship.get("author", {})
-                display_name = author.get("display_name")
-                if display_name:
-                    authors.append(display_name)
-
-            # Journal
             journal = None
-            primary_location = work.get("primary_location")
-            if primary_location:
-                source = primary_location.get("source", {})
-                journal = source.get("display_name")
+            loc = work.get("primary_location") or {}
+            if loc.get("source"):
+                journal = loc["source"].get("display_name")
 
-            # Publication date
-            pub_date = work.get("publication_date")
-
-            # DOI
             doi = work.get("doi")
             if doi:
                 doi = doi.replace("https://doi.org/", "")
 
-            # Citations count
-            citations_count = work.get("cited_by_count", 0)
-
-            # URL
-            url = work.get("id")  # OpenAlex ID is a URL
-
             return PaperSearchResult(
-                title=title,
-                abstract=abstract,
-                authors=authors if authors else None,
-                publication_date=pub_date,
+                title=work["title"],
+                abstract=self._reconstruct_abstract(work.get("abstract_inverted_index")),
+                authors=authors or None,
+                publication_date=work.get("publication_date"),
                 journal=journal,
                 doi=doi,
                 source=PaperSource.OPENALEX,
                 source_id=openalex_id,
-                url=url,
-                citations_count=citations_count
+                url=f"https://doi.org/{doi}" if doi else work.get("id"),
+                citations_count=work.get("cited_by_count", 0) or 0,
             )
-
         except Exception as e:
             logger.error(f"Error parsing OpenAlex work: {e}")
             return None
 
-    def _reconstruct_abstract(self, inverted_index: Optional[dict]) -> Optional[str]:
-        """
-        Reconstruct abstract text from OpenAlex inverted index
-
-        Args:
-            inverted_index: Dictionary mapping words to positions
-
-        Returns:
-            Reconstructed abstract text or None
-        """
+    @staticmethod
+    def _reconstruct_abstract(inverted_index: Optional[dict]) -> Optional[str]:
+        """Rebuild abstract text from OpenAlex's inverted index."""
         if not inverted_index:
             return None
-
         try:
-            # Create list to hold words at each position
-            max_position = max(
-                max(positions) for positions in inverted_index.values()
-            )
-            words = [""] * (max_position + 1)
-
-            # Fill in words at their positions
+            max_pos = max(max(p) for p in inverted_index.values())
+            words = [""] * (max_pos + 1)
             for word, positions in inverted_index.items():
                 for pos in positions:
                     words[pos] = word
-
-            # Join words to form abstract
-            abstract = " ".join(words).strip()
-            return abstract if abstract else None
-
-        except Exception as e:
-            logger.error(f"Error reconstructing abstract: {e}")
+            text = " ".join(w for w in words if w).strip()
+            return text or None
+        except Exception:
             return None
 
     async def get_paper_details(self, openalex_id: str) -> Optional[dict]:
-        """
-        Get detailed information for a specific OpenAlex work
-
-        Args:
-            openalex_id: OpenAlex work ID (e.g., W2741809807)
-
-        Returns:
-            Work details dictionary or None
-        """
         try:
-            url = f"https://api.openalex.org/works/{openalex_id}"
-
-            async with httpx.AsyncClient(timeout=self.timeout, headers=self.headers) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-
-                return response.json()
-
+            return await fetch(self.name, f"{OPENALEX_API_URL}/{openalex_id}",
+                               params=self._base_params(),
+                               rate_per_sec=settings.OPENALEX_RATE_LIMIT)
         except Exception as e:
             logger.error(f"Error fetching OpenAlex work {openalex_id}: {e}")
             return None

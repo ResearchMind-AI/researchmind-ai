@@ -1,7 +1,10 @@
 """
 Authentication endpoints
 """
+import secrets
 from datetime import timedelta
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -19,6 +22,7 @@ router = APIRouter()
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(
     user_in: UserCreate,
+    invite_code: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -34,6 +38,10 @@ def register(
     Raises:
         HTTPException: If email already registered
     """
+    # Optional invite code (INVITE_CODE) keeps public test deployments private
+    if settings.INVITE_CODE and not secrets.compare_digest(invite_code or "", settings.INVITE_CODE):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="A valid invite code is required")
+
     # Check if user already exists
     existing_user = db.query(User).filter(User.email == user_in.email).first()
     if existing_user:

@@ -13,6 +13,7 @@ class PaperSource(str, enum.Enum):
     PUBMED = "pubmed"
     OPENALEX = "openalex"
     SEMANTIC_SCHOLAR = "semantic_scholar"
+    ARXIV = "arxiv"
     MANUAL_UPLOAD = "manual_upload"
 
 

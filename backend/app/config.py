@@ -1,134 +1,112 @@
 """
 Configuration management for ResearchMindAI
-Uses pydantic-settings for environment variable validation
+Uses pydantic-settings for environment variable validation.
+
+Optional API keys (OpenAlex, Semantic Scholar, PubMed, Anthropic) can be left
+empty: the app still runs in "limited" mode and automatically uses higher
+limits and extra features once a key is added.
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 from typing import List, Union
 import os
 
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
     # Application
     APP_NAME: str = "ResearchMindAI"
     APP_VERSION: str = "1.0.0"
-    DEBUG: bool = True
+    DEBUG: bool = False
 
-    # Database
+    # Database. PostgreSQL in Docker/AWS; "sqlite:///./researchmind.db" also works.
     DATABASE_URL: str = Field(
         default="postgresql://researchmind:devpassword@localhost:5432/researchmind_db",
-        description="PostgreSQL database connection string"
+        description="Database connection string"
     )
 
     # Redis
-    REDIS_URL: str = Field(
-        default="redis://localhost:6379/0",
-        description="Redis connection string"
-    )
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
 
     # Security
-    SECRET_KEY: str = Field(
-        default="dev-secret-key-change-in-production",
-        description="Secret key for JWT encoding"
-    )
+    SECRET_KEY: str = Field(default="dev-secret-key-change-in-production")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # If set, new accounts need this code (keeps a public test link private)
+    INVITE_CODE: str = ""
 
     # CORS
     CORS_ORIGINS: Union[str, List[str]] = Field(
-        default="http://localhost:3000,http://localhost:5173",
-        description="Allowed CORS origins (comma-separated string or list)"
+        default="http://localhost:3000,http://localhost:5173"
     )
+
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def normalise_database_url(cls, v: str) -> str:
+        # Railway/Render/Heroku-style "postgres://" URLs are rejected by SQLAlchemy 2
+        if v.startswith("postgres://"):
+            return "postgresql://" + v[len("postgres://"):]
+        return v
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
-    # OpenAI
-    OPENAI_API_KEY: str = Field(
-        default="",
-        description="OpenAI API key for embeddings and chat"
-    )
-    EMBEDDING_MODEL: str = Field(
-        default="text-embedding-3-small",
-        description="OpenAI embedding model to use"
-    )
-    CHUNK_SIZE: int = Field(
-        default=1000,
-        description="Text chunk size for embeddings"
-    )
-    CHUNK_OVERLAP: int = Field(
-        default=200,
-        description="Overlap between text chunks"
-    )
+    # ── LLMs ──────────────────────────────────────────────────────────────────
+    # OpenAI is required for embeddings. Chat/synthesis uses Claude when
+    # ANTHROPIC_API_KEY is set, otherwise falls back to the OpenAI CHAT_MODEL.
+    OPENAI_API_KEY: str = ""
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    CHAT_MODEL: str = "gpt-4o-mini"
+    ANTHROPIC_API_KEY: str = ""
+    CLAUDE_MODEL: str = "claude-sonnet-5-5"
+    CHUNK_SIZE: int = 1000
+    CHUNK_OVERLAP: int = 200
 
-    # PubMed
-    PUBMED_API_KEY: str = Field(
-        default="",
-        description="PubMed API key (optional but recommended)"
-    )
-    PUBMED_EMAIL: str = Field(
-        default="",
-        description="Email for PubMed API (required for higher rate limits)"
-    )
+    # ── Paper sources (all free) ──────────────────────────────────────────────
+    # Leave keys empty to run in limited mode.
+    OPENALEX_API_KEY: str = ""
+    OPENALEX_EMAIL: str = ""
+    SEMANTIC_SCHOLAR_API_KEY: str = ""
+    PUBMED_API_KEY: str = ""
+    PUBMED_EMAIL: str = ""
+    CROSSREF_EMAIL: str = ""
 
-    # OpenAlex
-    OPENALEX_EMAIL: str = Field(
-        default="",
-        description="Email for OpenAlex polite pool (recommended)"
-    )
+    # Discovery tuning
+    MAX_PAPERS_PER_SESSION: int = 40
+    CACHE_TTL_HOURS: int = 72
 
     # Celery
-    CELERY_BROKER_URL: str = Field(
-        default="redis://localhost:6379/0",
-        description="Celery broker URL"
-    )
-    CELERY_RESULT_BACKEND: str = Field(
-        default="redis://localhost:6379/0",
-        description="Celery result backend URL"
-    )
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
 
-    # File Storage
-    UPLOAD_DIR: str = Field(
-        default="../data/uploads",
-        description="Directory for uploaded files"
-    )
-    MAX_UPLOAD_SIZE: int = Field(
-        default=52428800,  # 50MB
-        description="Maximum upload file size in bytes"
-    )
+    # File Storage (uploaded PDFs are stored as extracted text in the database)
+    UPLOAD_DIR: str = "../data/uploads"
+    MAX_UPLOAD_SIZE: int = 52428800  # 50MB
 
-    # Vector Store
-    CHROMA_PERSIST_DIR: str = Field(
-        default="../data/chroma",
-        description="Chroma persistence directory"
-    )
+    # Offline test mode: fake sources/LLM/embeddings, for tests and UI checks only.
+    OFFLINE_DEMO: bool = False
 
-    # Rate Limiting
-    SEMANTIC_SCHOLAR_RATE_LIMIT: float = 1.0  # requests per second
-    PUBMED_RATE_LIMIT: float = 3.0  # requests per second (with API key)
-    OPENALEX_RATE_LIMIT: float = 10.0  # requests per second (polite pool)
+    # Rate limiting (requests per second)
+    SEMANTIC_SCHOLAR_RATE_LIMIT: float = 1.0
+    PUBMED_RATE_LIMIT: float = 3.0
+    OPENALEX_RATE_LIMIT: float = 10.0
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    @property
+    def llm_provider(self) -> str:
+        return "anthropic" if self.ANTHROPIC_API_KEY else "openai"
 
 
 # Global settings instance
 settings = Settings()
 
 
-# Ensure required directories exist
 def ensure_directories():
     """Create required directories if they don't exist"""
-    directories = [
-        settings.UPLOAD_DIR,
-        settings.CHROMA_PERSIST_DIR,
-    ]
-
-    for directory in directories:
-        os.makedirs(directory, exist_ok=True)
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

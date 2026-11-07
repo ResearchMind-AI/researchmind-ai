@@ -14,7 +14,11 @@ class EmbeddingService:
     """Service for generating embeddings using OpenAI"""
 
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        if settings.OFFLINE_DEMO:
+            from app.services.offline import FakeEmbeddings
+            self.client = FakeEmbeddings()
+        else:
+            self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = settings.EMBEDDING_MODEL
         self.chunk_size = settings.CHUNK_SIZE
         self.chunk_overlap = settings.CHUNK_OVERLAP
@@ -54,13 +58,11 @@ class EmbeddingService:
             List of embedding vectors
         """
         try:
-            # OpenAI API supports batch embedding
-            response = await self.client.embeddings.create(
-                input=texts,
-                model=self.model
-            )
-
-            embeddings = [data.embedding for data in response.data]
+            embeddings: List[List[float]] = []
+            for start in range(0, len(texts), 96):  # stay well under API batch limits
+                batch = [t[:8000] for t in texts[start:start + 96]]
+                response = await self.client.embeddings.create(input=batch, model=self.model)
+                embeddings.extend(d.embedding for d in response.data)
             logger.info(f"Generated {len(embeddings)} embeddings")
             return embeddings
 

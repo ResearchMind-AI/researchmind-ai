@@ -53,6 +53,14 @@ class Session(Base):
     team = relationship("Team", back_populates="sessions")
     members = relationship("SessionMember", back_populates="session", cascade="all, delete-orphan")
     session_papers = relationship("SessionPaper", back_populates="session", cascade="all, delete-orphan")
+    knowledge_nodes = relationship("KnowledgeNode", back_populates="session", cascade="all, delete-orphan")
+    chunks = relationship("PaperChunk", cascade="all, delete-orphan", passive_deletes=True)
+    messages = relationship("SessionMessage", cascade="all, delete-orphan", passive_deletes=True,
+                            order_by="SessionMessage.id")
+    artifacts = relationship("SessionArtifact", cascade="all, delete-orphan", passive_deletes=True)
+    gaps = relationship("Gap", cascade="all, delete-orphan", passive_deletes=True, order_by="Gap.id")
+    writing_sections = relationship("WritingSection", cascade="all, delete-orphan", passive_deletes=True,
+                                    order_by="WritingSection.position")
 
     def __repr__(self):
         return f"<Session(id={self.id}, title={self.title}, status={self.status})>"

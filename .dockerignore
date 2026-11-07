@@ -1,0 +1,15 @@
+.git
+**/node_modules
+**/dist
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/.env
+**/*.db
+**/.pytest_cache
+backend/tests
+backend/test_*.py
+terraform
+infra
+data

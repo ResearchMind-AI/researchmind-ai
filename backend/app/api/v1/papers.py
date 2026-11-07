@@ -11,7 +11,7 @@ from datetime import datetime
 from app.core.database import get_db
 from app.models.user import User
 from app.models.paper import Paper, SessionPaper, PaperSource
-from app.models.session import Session
+from app.models.session import Session, SessionMemberRole
 from app.schemas.paper import (
     PaperSearchRequest,
     PaperSearchResponse,
@@ -30,11 +30,15 @@ from app.services.openalex_service import OpenAlexService
 from app.services.text_extraction import TextExtractor
 from app.services.embedding_service import EmbeddingService
 from app.services.vector_store import VectorStoreService
+from app.services.discovery_service import parse_date, all_sources
 from app.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Viewers and reviewers are read-only (owner always has access)
+EDIT_ROLES = [SessionMemberRole.LEAD, SessionMemberRole.CONTRIBUTOR]
 
 
 @router.post("/search", response_model=PaperSearchResponse)
@@ -55,28 +59,17 @@ async def search_papers(
         Combined search results from requested sources
     """
     all_results: List[PaperSearchResult] = []
-
-    # Search PubMed if requested
-    if PaperSource.PUBMED in search_request.sources:
-        pubmed_service = PubMedService()
-        pubmed_results = await pubmed_service.search_papers(
-            query=search_request.query,
-            max_results=search_request.max_results,
-            start_year=search_request.start_year,
-            end_year=search_request.end_year
-        )
-        all_results.extend(pubmed_results)
-
-    # Search OpenAlex if requested
-    if PaperSource.OPENALEX in search_request.sources:
-        openalex_service = OpenAlexService()
-        openalex_results = await openalex_service.search_papers(
-            query=search_request.query,
-            max_results=search_request.max_results,
-            start_year=search_request.start_year,
-            end_year=search_request.end_year
-        )
-        all_results.extend(openalex_results)
+    sources = all_sources()
+    for source in search_request.sources:
+        service = sources.get(source.value)
+        if service is None:
+            continue
+        try:
+            all_results.extend(await service.search(
+                search_request.query, search_request.max_results,
+                search_request.start_year, search_request.end_year))
+        except Exception as e:
+            logger.warning(f"{source.value} search failed: {e}")
 
     return PaperSearchResponse(
         query=search_request.query,
@@ -103,7 +96,7 @@ async def ingest_paper_from_search(
         Created session paper object
     """
     # Check session permission
-    session = check_session_permission(ingest_request.session_id, current_user, db)
+    session = check_session_permission(ingest_request.session_id, current_user, db, EDIT_ROLES)
 
     # Check if paper already exists in database
     existing_paper = db.query(Paper).filter(
@@ -142,6 +135,10 @@ async def ingest_paper_from_search(
             if work:
                 paper_data = openalex_service._parse_openalex_work(work)
 
+        elif ingest_request.source in (PaperSource.SEMANTIC_SCHOLAR, PaperSource.ARXIV):
+            service = all_sources()[ingest_request.source.value]
+            paper_data = await service.get_by_id(ingest_request.source_id)
+
         if not paper_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -153,7 +150,7 @@ async def ingest_paper_from_search(
             title=paper_data.title,
             abstract=paper_data.abstract,
             authors=paper_data.authors,
-            publication_date=datetime.fromisoformat(paper_data.publication_date) if paper_data.publication_date and 'T' not in paper_data.publication_date else None,
+            publication_date=parse_date(paper_data.publication_date),
             journal=paper_data.journal,
             doi=paper_data.doi,
             source=paper_data.source,
@@ -166,37 +163,27 @@ async def ingest_paper_from_search(
         db.commit()
         db.refresh(paper)
 
-        # Generate embeddings and store in vector database
+    # Embeddings are per session (by design), so embed even when the paper
+    # already exists in the database from another session.
+    vector_store = VectorStoreService(db)
+    if not vector_store.has_embeddings(ingest_request.session_id, paper.id):
         try:
             embedding_service = EmbeddingService()
-            vector_store = VectorStoreService()
-
-            # Embed the paper
             chunks, embeddings = await embedding_service.embed_paper(
                 title=paper.title,
                 abstract=paper.abstract or "",
-                full_text=None  # Full text will be added later if available
+                full_text=paper.full_text,
             )
-
             if chunks and embeddings:
-                # Store in vector database
                 await vector_store.add_paper_embeddings(
                     session_id=ingest_request.session_id,
                     paper_id=paper.id,
                     chunks=chunks,
                     embeddings=embeddings,
-                    metadata={
-                        "title": paper.title,
-                        "source": paper.source.value,
-                        "doi": paper.doi or ""
-                    }
                 )
-
-                # Mark embedding as generated
                 paper.embedding_generated = True
                 paper.embedding_model = settings.EMBEDDING_MODEL
                 db.commit()
-
         except Exception as e:
             logger.error(f"Error generating embeddings for paper {paper.id}: {e}")
             # Continue even if embedding fails
@@ -239,7 +226,7 @@ async def upload_paper(
         Upload response with paper and session paper IDs
     """
     # Check session permission
-    session = check_session_permission(session_id, current_user, db)
+    session = check_session_permission(session_id, current_user, db, EDIT_ROLES)
 
     # Validate file type
     if not file.filename:
@@ -309,7 +296,7 @@ async def upload_paper(
     # Generate embeddings
     try:
         embedding_service = EmbeddingService()
-        vector_store = VectorStoreService()
+        vector_store = VectorStoreService(db)
 
         chunks, embeddings = await embedding_service.embed_paper(
             title=paper.title,
@@ -435,7 +422,7 @@ def update_session_paper(
         Updated session paper
     """
     # Check session permission
-    check_session_permission(session_id, current_user, db)
+    check_session_permission(session_id, current_user, db, EDIT_ROLES)
 
     # Get session paper
     session_paper = db.query(SessionPaper).filter(
@@ -478,7 +465,7 @@ async def remove_paper_from_session(
         db: Database session
     """
     # Check session permission
-    check_session_permission(session_id, current_user, db)
+    check_session_permission(session_id, current_user, db, EDIT_ROLES)
 
     # Get session paper
     session_paper = db.query(SessionPaper).filter(
@@ -494,7 +481,7 @@ async def remove_paper_from_session(
 
     # Remove from vector store
     try:
-        vector_store = VectorStoreService()
+        vector_store = VectorStoreService(db)
         await vector_store.delete_paper_embeddings(session_id, paper_id)
     except Exception as e:
         logger.error(f"Error deleting embeddings: {e}")
